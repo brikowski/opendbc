@@ -103,8 +103,6 @@ class CarInterface(CarInterfaceBase):
     elif candidate in (CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CIVIC_BOSCH_DIESEL):
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 4096], [0, 4096]]  # TODO: determine if there is a dead zone at the top end
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.8], [0.24]]
-      if candidate == CAR.HONDA_CIVIC_BOSCH:
-          CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 750]
 
     elif candidate == CAR.HONDA_CIVIC_2022:
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 4096], [0, 4096]]  # TODO: determine if there is a dead zone at the top end
@@ -183,19 +181,23 @@ class CarInterface(CarInterfaceBase):
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.6], [0.18]] # TODO: can probably use some tuning
 
     elif candidate == CAR.HONDA_ODYSSEY_5G_MMR:
-      # Stock camera sends up to 2560 during LKA operation and up to 3840 during RDM operation
-      # Steer motor torque does rise a little above 2560, but not linearly, RDM also applies one-sided brake drag
-      #ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560, 3072], [0, 2560, 3840]]
+      # Stock camera sends up to 2560 during LKA operation and up to 3840 during RDM operation.
+      # Steer motor torque rises slightly above 2560 non-linearly; RDM uses asymmetric braking.
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560], [0, 2560]]
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
       ret.steerActuatorDelay = 0.15
       ret.lateralTuning.torque.friction = 0.05
+
+      # Longitudinal Tuning
+      # Overrides the default 0.5s Bosch delay to eliminate significant engine/transmission lag
+      ret.longitudinalActuatorDelay = 0.22
       ret.longitudinalTuning.kpBP = [0., 5., 35.]
-      ret.longitudinalTuning.kpV = [1.4, 1.0, 0.7]  # Increased to react faster to gravity speed drifts
+      # Aggressive low-speed proportional gain to overcome vehicle inertia during creep cycles
+      ret.longitudinalTuning.kpV = [1.9, 1.0, 0.7]
       ret.longitudinalTuning.kiBP = [0., 35.]
-      ret.longitudinalTuning.kiV = [0.24, 0.18]     # Increased to hold momentum against the van's weight
-      CarControllerParams.BOSCH_GAS_LOOKUP_BP = [-0.2, 0.5, 2.0]
-      CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 800, 2200]
+      # Enhanced integral gain to counteract deadband and maintain tracking against a 1.43 deg average pitch
+      ret.longitudinalTuning.kiV = [0.24, 0.18]
+
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
         ret.minSteerSpeed = 70. * CV.KPH_TO_MS

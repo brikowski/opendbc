@@ -49,6 +49,19 @@ class CarControllerParams:
     self.STEER_LOOKUP_BP = [v * -1 for v in CP.lateralParams.torqueBP][1:][::-1] + list(CP.lateralParams.torqueBP)
     self.STEER_LOOKUP_V = [v * -1 for v in CP.lateralParams.torqueV][1:][::-1] + list(CP.lateralParams.torqueV)
 
+    # --- Vehicle-Specific Gas Lookup Profiles ---
+    # Assigns instance variables to prevent global class mutations across different models
+    if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      self.BOSCH_GAS_LOOKUP_BP = [-0.2, 0.5, 2.0]
+      self.BOSCH_GAS_LOOKUP_V = [0, 800, 2200]
+    elif CP.carFingerprint == CAR.HONDA_CIVIC_BOSCH:
+      self.BOSCH_GAS_LOOKUP_BP = CarControllerParams.BOSCH_GAS_LOOKUP_BP
+      self.BOSCH_GAS_LOOKUP_V = [0, 750]
+    else:
+      # Standard fallback profile for all other Bosch-equipped vehicles
+      self.BOSCH_GAS_LOOKUP_BP = CarControllerParams.BOSCH_GAS_LOOKUP_BP
+      self.BOSCH_GAS_LOOKUP_V = CarControllerParams.BOSCH_GAS_LOOKUP_V
+
 
 class HondaSafetyFlags(IntFlag):
   ALT_BRAKE = 1
