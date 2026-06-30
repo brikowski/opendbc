@@ -189,7 +189,13 @@ class CarInterface(CarInterfaceBase):
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560], [0, 2560]]
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
       ret.steerActuatorDelay = 0.15
-      CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
+      ret.lateralTuning.torque.friction = 0.05
+      ret.longitudinalTuning.kpBP = [0., 5., 35.]
+      ret.longitudinalTuning.kpV = [1.4, 1.0, 0.7]  # Increased to react faster to gravity speed drifts
+      ret.longitudinalTuning.kiBP = [0., 35.]
+      ret.longitudinalTuning.kiV = [0.24, 0.18]     # Increased to hold momentum against the van's weight
+      CarControllerParams.BOSCH_GAS_LOOKUP_BP = [-0.2, 0.5, 2.0]
+      CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 800, 2200]
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
         ret.minSteerSpeed = 70. * CV.KPH_TO_MS
