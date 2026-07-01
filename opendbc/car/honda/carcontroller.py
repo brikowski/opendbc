@@ -108,12 +108,17 @@ class CarController(CarControllerBase):
     self.gas = 0.0
     self.brake = 0.0
     self.last_torque = 0.0
+    self.pitch = 0.0
+    self.gas_last = 0.0
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
+
+    if len(CC.orientationNED) == 3:
+      self.pitch = CC.orientationNED[1]
 
     if CC.longActive:
       accel = actuators.accel
@@ -198,8 +203,24 @@ class CarController(CarControllerBase):
         ts = self.frame * DT_CTRL
 
         if self.CP.carFingerprint in HONDA_BOSCH:
-          self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
-          self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+          if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+            # 1. Calculate gravity drag acceleration offset (9.81 m/s²)
+            hill_brake_ms2 = np.sin(self.pitch) * 9.81
+
+            # 2. Extract empirical aerodynamic drag curve baseline
+            wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
+
+            # 3. Sum environmental counter-forces with raw planner acceleration
+            gas_pedal_force = accel + wind_brake_ms2 + hill_brake_ms2
+
+            # 4. Interpolate base gas target
+            gas_target = float(np.interp(gas_pedal_force, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+
+            # 5. Enforce factory rate-of-change limit (Max 60 units per frame) to prevent ECU faults
+            self.gas = min(gas_target, max(60.0, self.gas_last + 60.0))
+            self.gas_last = self.gas
+
+            self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
           stopping = actuators.longControlState == LongCtrlState.stopping
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
