@@ -154,7 +154,7 @@ class CarController(CarControllerBase):
     # tester present - w/ no response (keeps radar disabled)
     if self.CP.carFingerprint in (HONDA_BOSCH - HONDA_BOSCH_RADARLESS) and self.CP.openpilotLongitudinalControl:
       if self.frame % 10 == 0:
-        can_sends.append(make_tester_present_msg(0x18DAB0F1, 1, suppress_response=True))
+        can_sends.append(make_tester_present_msg(0x18DAB0F1, self.CAN.pt, suppress_response=True))
 
     # Send steering command.
     can_sends.append(hondacan.create_steering_control(self.packer, self.CAN, apply_torque, CC.latActive, self.tja_control))
@@ -204,23 +204,30 @@ class CarController(CarControllerBase):
 
         if self.CP.carFingerprint in HONDA_BOSCH:
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-            # 1. Calculate gravity drag acceleration offset (9.81 m/s²)
+            # 1. Extract raw environmental forces
             hill_brake_ms2 = np.sin(self.pitch) * 9.81
-
-            # 2. Extract empirical aerodynamic drag curve baseline
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
 
-            # 3. Sum environmental counter-forces with raw planner acceleration
-            gas_pedal_force = accel + wind_brake_ms2 + hill_brake_ms2
+            # 2. Gated physics safety: Only offset parameters when actively moving
+            if CC.longActive and CS.out.vEgo > 1.0:
+              compensated_accel = accel + wind_brake_ms2 + hill_brake_ms2
+            else:
+              compensated_accel = accel
 
-            # 4. Interpolate base gas target
-            gas_target = float(np.interp(gas_pedal_force, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            # 3. Interpolate gas target using the synchronized acceleration value
+            gas_target = float(np.interp(compensated_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
 
-            # 5. Enforce factory rate-of-change limit (Max 60 units per frame) to prevent ECU faults
+            # 4. Enforce factory rate-of-change limit (Max 60 units per frame)
             self.gas = min(gas_target, max(60.0, self.gas_last + 60.0))
             self.gas_last = self.gas
 
+            # 5. Synchronize self.accel to match the exact same target requested by gas
+            self.accel = float(np.clip(compensated_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+
+          else:
+            # Stock fallback logic for all other standard Bosch vehicles
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+            self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
 
           stopping = actuators.longControlState == LongCtrlState.stopping
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
