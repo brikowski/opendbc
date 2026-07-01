@@ -189,8 +189,9 @@ class CarInterface(CarInterfaceBase):
       ret.lateralTuning.torque.friction = 0.05
 
       # Longitudinal Tuning
-      # Overrides the default 0.5s Bosch delay to eliminate significant engine/transmission lag
-      ret.longitudinalActuatorDelay = 0.22
+      # Restored to standard Bosch platform baseline to stabilize the MPC planner loop
+      ret.longitudinalActuatorDelay = 0.5
+
       ret.longitudinalTuning.kpBP = [0., 5., 35.]
       # Aggressive low-speed proportional gain to overcome vehicle inertia during creep cycles
       ret.longitudinalTuning.kpV = [1.9, 1.0, 0.7]
@@ -250,12 +251,14 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def init(CP, can_recv, can_send, communication_control=None):
-    if CP.carFingerprint in (HONDA_BOSCH - HONDA_BOSCH_RADARLESS) and CP.openpilotLongitudinalControl:
-      # 0x80 silences response
-      if communication_control is None:
-        communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX,
-                                       uds.MESSAGE_TYPE.NORMAL_AND_NETWORK_MANAGEMENT])
-      disable_ecu(can_recv, can_send, bus=CanBus(CP).pt, addr=0x18DAB0F1, com_cont_req=communication_control)
+   if CP.carFingerprint in (HONDA_BOSCH - HONDA_BOSCH_RADARLESS) and CP.openpilotLongitudinalControl:
+    if communication_control is None:
+      communication_control = bytes([uds.SERVICE_TYPE.COMMUNICATION_CONTROL, 0x80 | uds.CONTROL_TYPE.DISABLE_RX_DISABLE_TX,
+                                     uds.MESSAGE_TYPE.NORMAL_AND_NETWORK_MANAGEMENT])
+
+    # Target Bus 0 (radar) if alternate hardware layout is present, otherwise fallback to Bus 1 (pt)
+    radar_bus = CanBus(CP).radar if (CP.flags & HondaFlags.BOSCH_ALT_RADAR) else CanBus(CP).pt
+    disable_ecu(can_recv, can_send, bus=radar_bus, addr=0x18DAB0F1, com_cont_req=communication_control)
 
   @staticmethod
   def deinit(CP, can_recv, can_send):
