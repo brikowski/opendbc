@@ -3,8 +3,16 @@ import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
 from opendbc.car.honda import hondacan
-from opendbc.car.honda.values import CAR, CruiseButtons, HONDA_BOSCH, HONDA_BOSCH_CANFD, HONDA_BOSCH_RADARLESS, \
-                                     HONDA_BOSCH_TJA_CONTROL, HONDA_NIDEC_ALT_PCM_ACCEL, CarControllerParams
+from opendbc.car.honda.values import (
+  CAR,
+  CruiseButtons,
+  HONDA_BOSCH,
+  HONDA_BOSCH_CANFD,
+  HONDA_BOSCH_RADARLESS,
+  HONDA_BOSCH_TJA_CONTROL,
+  HONDA_NIDEC_ALT_PCM_ACCEL,
+  CarControllerParams,
+)
 from opendbc.car.interfaces import CarControllerBase
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
@@ -36,18 +44,18 @@ def compute_gas_brake(accel, speed, fingerprint):
 # TODO not clear this does anything useful
 def actuator_hysteresis(brake, braking, brake_steady, v_ego, car_fingerprint):
   # hyst params
-  brake_hyst_on = 0.02    # to activate brakes exceed this value
+  brake_hyst_on = 0.02  # to activate brakes exceed this value
   brake_hyst_off = 0.005  # to deactivate brakes below this value
-  brake_hyst_gap = 0.01   # don't change brake command for small oscillations within this value
+  brake_hyst_gap = 0.01  # don't change brake command for small oscillations within this value
 
   # *** hysteresis logic to avoid brake blinking. go above 0.1 to trigger
   if (brake < brake_hyst_on and not braking) or brake < brake_hyst_off:
-    brake = 0.
-  braking = brake > 0.
+    brake = 0.0
+  braking = brake > 0.0
 
   # for small brake oscillations within brake_hyst_gap, don't change the brake command
-  if brake == 0.:
-    brake_steady = 0.
+  if brake == 0.0:
+    brake_steady = 0.0
   elif brake > brake_steady + brake_hyst_gap:
     brake_steady = brake - brake_hyst_gap
   elif brake < brake_steady - brake_hyst_gap:
@@ -64,7 +72,7 @@ def brake_pump_hysteresis(apply_brake, apply_brake_last, last_pump_ts, ts):
   # - there is an increment in brake request
   # - we are applying steady state brakes and we haven't been running the pump
   #   for more than 20s (to prevent pressure bleeding)
-  if apply_brake > apply_brake_last or (ts - last_pump_ts > 20. and apply_brake > 0):
+  if apply_brake > apply_brake_last or (ts - last_pump_ts > 20.0 and apply_brake > 0):
     last_pump_ts = ts
 
   # once the pump is on, run it for at least 0.2s
@@ -97,10 +105,10 @@ class CarController(CarControllerBase):
     self.tja_control = CP.carFingerprint in HONDA_BOSCH_TJA_CONTROL
 
     self.braking = False
-    self.brake_steady = 0.
-    self.brake_last = 0.
+    self.brake_steady = 0.0
+    self.brake_last = 0.0
     self.apply_brake_last = 0
-    self.last_pump_ts = 0.
+    self.last_pump_ts = 0.0
     self.stopping_counter = 0
 
     self.accel = 0.0
@@ -128,16 +136,14 @@ class CarController(CarControllerBase):
       gas, brake = 0.0, 0.0
 
     # *** rate limit steer ***
-    limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
-                                self.params.STEER_DELTA_UP * DT_CTRL)
+    limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL, self.params.STEER_DELTA_UP * DT_CTRL)
     self.last_torque = limited_torque
 
     # *** apply brake hysteresis ***
-    pre_limit_brake, self.braking, self.brake_steady = actuator_hysteresis(brake, self.braking, self.brake_steady,
-                                                                           CS.out.vEgo, self.CP.carFingerprint)
+    pre_limit_brake, self.braking, self.brake_steady = actuator_hysteresis(brake, self.braking, self.brake_steady, CS.out.vEgo, self.CP.carFingerprint)
 
     # *** rate limit after the enable check ***
-    self.brake_last = rate_limit(pre_limit_brake, self.brake_last, -2., DT_CTRL)
+    self.brake_last = rate_limit(pre_limit_brake, self.brake_last, -2.0, DT_CTRL)
 
     # vehicle hud display, wait for one update from 10Hz 0x304 msg
     alert_fcw, alert_steer_required = process_hud_alert(hud_control.visualAlert)
@@ -145,8 +151,7 @@ class CarController(CarControllerBase):
     # **** process the car messages ****
 
     # steer torque is converted back to CAN reference (positive when steering right)
-    apply_torque = int(np.interp(-limited_torque * self.params.STEER_MAX,
-                                 self.params.STEER_LOOKUP_BP, self.params.STEER_LOOKUP_V))
+    apply_torque = int(np.interp(-limited_torque * self.params.STEER_MAX, self.params.STEER_LOOKUP_BP, self.params.STEER_LOOKUP_V))
 
     # Send CAN commands
     can_sends = []
@@ -154,7 +159,7 @@ class CarController(CarControllerBase):
     # tester present - w/ no response (keeps radar disabled)
     if self.CP.carFingerprint in (HONDA_BOSCH - HONDA_BOSCH_RADARLESS) and self.CP.openpilotLongitudinalControl:
       if self.frame % 10 == 0:
-        can_sends.append(make_tester_present_msg(0x18DAB0F1, self.CAN.pt, suppress_response=True))
+        can_sends.append(make_tester_present_msg(0x18DAB0F1, 1, suppress_response=True))
 
     # Send steering command.
     can_sends.append(hondacan.create_steering_control(self.packer, self.CAN, apply_torque, CC.latActive, self.tja_control))
@@ -164,27 +169,18 @@ class CarController(CarControllerBase):
     # all of this is only relevant for HONDA NIDEC
     max_accel = np.interp(CS.out.vEgo, self.params.NIDEC_MAX_ACCEL_BP, self.params.NIDEC_MAX_ACCEL_V)
     # TODO this 1.44 is just to maintain previous behavior
-    pcm_speed_BP = [-wind_brake,
-                    -wind_brake * (3 / 4),
-                    0.0,
-                    0.5]
+    pcm_speed_BP = [-wind_brake, -wind_brake * (3 / 4), 0.0, 0.5]
     # The Honda ODYSSEY seems to have different PCM_ACCEL
     # msgs, is it other cars too?
     if not CC.longActive:
       pcm_speed = 0.0
       pcm_accel = int(0.0)
     elif self.CP.carFingerprint in HONDA_NIDEC_ALT_PCM_ACCEL:
-      pcm_speed_V = [0.0,
-                     np.clip(CS.out.vEgo - 3.0, 0.0, 100.0),
-                     np.clip(CS.out.vEgo + 0.0, 0.0, 100.0),
-                     np.clip(CS.out.vEgo + 5.0, 0.0, 100.0)]
+      pcm_speed_V = [0.0, np.clip(CS.out.vEgo - 3.0, 0.0, 100.0), np.clip(CS.out.vEgo + 0.0, 0.0, 100.0), np.clip(CS.out.vEgo + 5.0, 0.0, 100.0)]
       pcm_speed = float(np.interp(gas - brake, pcm_speed_BP, pcm_speed_V))
       pcm_accel = int(1.0 * self.params.NIDEC_GAS_MAX)
     else:
-      pcm_speed_V = [0.0,
-                     np.clip(CS.out.vEgo - 2.0, 0.0, 100.0),
-                     np.clip(CS.out.vEgo + 2.0, 0.0, 100.0),
-                     np.clip(CS.out.vEgo + 5.0, 0.0, 100.0)]
+      pcm_speed_V = [0.0, np.clip(CS.out.vEgo - 2.0, 0.0, 100.0), np.clip(CS.out.vEgo + 2.0, 0.0, 100.0), np.clip(CS.out.vEgo + 5.0, 0.0, 100.0)]
       pcm_speed = float(np.interp(gas - brake, pcm_speed_BP, pcm_speed_V))
       pcm_accel = int(np.clip((accel / 1.44) / max_accel, 0.0, 1.0) * self.params.NIDEC_GAS_MAX)
 
@@ -231,17 +227,20 @@ class CarController(CarControllerBase):
 
           stopping = actuators.longControlState == LongCtrlState.stopping
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
-          can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                                        self.stopping_counter, self.CP.carFingerprint))
+          can_sends.extend(
+            hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas, self.stopping_counter, self.CP.carFingerprint)
+          )
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
           pump_on, self.last_pump_ts = brake_pump_hysteresis(apply_brake, self.apply_brake_last, self.last_pump_ts, ts)
 
           pcm_override = True
-          can_sends.append(hondacan.create_brake_command(self.packer, self.CAN, apply_brake, pump_on,
-                                                         pcm_override, pcm_cancel_cmd, alert_fcw,
-                                                         self.CP.carFingerprint, CS.stock_brake))
+          can_sends.append(
+            hondacan.create_brake_command(
+              self.packer, self.CAN, apply_brake, pump_on, pcm_override, pcm_cancel_cmd, alert_fcw, self.CP.carFingerprint, CS.stock_brake
+            )
+          )
           self.apply_brake_last = apply_brake
           self.brake = apply_brake / self.params.NIDEC_BRAKE_MAX
 
@@ -249,12 +248,14 @@ class CarController(CarControllerBase):
     if self.frame % 10 == 0:
       if self.CP.openpilotLongitudinalControl:
         # On Nidec, this also controls longitudinal positive acceleration
-        can_sends.append(hondacan.create_acc_hud(self.packer, self.CAN.pt, self.CP, CC.enabled, pcm_speed, pcm_accel,
-                                                 hud_control, hud_v_cruise, CS.is_metric, CS.acc_hud))
+        can_sends.append(
+          hondacan.create_acc_hud(self.packer, self.CAN.pt, self.CP, CC.enabled, pcm_speed, pcm_accel, hud_control, hud_v_cruise, CS.is_metric, CS.acc_hud)
+        )
 
       steering_available = CS.out.cruiseState.available and CS.out.vEgo > max(self.params.STEER_GLOBAL_MIN_SPEED, self.CP.minSteerSpeed)
-      can_sends.extend(hondacan.create_lkas_hud(self.packer, self.CAN.lkas, self.CP, hud_control, CC.latActive,
-                                                steering_available, alert_steer_required, CS.lkas_hud))
+      can_sends.extend(
+        hondacan.create_lkas_hud(self.packer, self.CAN.lkas, self.CP, hud_control, CC.latActive, steering_available, alert_steer_required, CS.lkas_hud)
+      )
 
       if self.CP.openpilotLongitudinalControl:
         # TODO: combining with create_acc_hud block above will change message order and will need replay logs regenerated
