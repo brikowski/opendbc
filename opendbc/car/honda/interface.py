@@ -186,9 +186,20 @@ class CarInterface(CarInterfaceBase):
       # Stock camera sends up to 2560 during LKA operation and up to 3840 during RDM operation
       # Steer motor torque does rise a little above 2560, but not linearly, RDM also applies one-sided brake drag
       #ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560, 3072], [0, 2560, 3840]]
-      ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560], [0, 2560]]
+      # CUSTOM TUNE: raise steer authority to the full RDM range (3840, linear) so the van can
+      # hold large/sharp curves - stock's 2560 ceiling maxes out and can't. steerActuatorDelay
+      # 0.36 matches the liveDelay estimate (~0.365, tiny std) seen in logs. No steering deadzone:
+      # stock master runs 0 and steers cleanly on all drives, so we start there and only add one
+      # if future logs actually show friction ping-pong. latAccelFactor seeded to 1.3: the live
+      # torque learner converges to ~1.30-1.33 across four logged drives (routes ...0000008d /
+      # ...0000008c / ...0000008f), well above the 0.9 torque-data default, so this makes the
+      # first ~minute of cold-start steering match the settled feel. The learner still overrides
+      # it at runtime, so this only sets the cold-start floor. Re-verify if it drifts.
+      # TODO: delete excessive comments before trying to submit a PR.
+      ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 3840], [0, 3840]]
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-      ret.steerActuatorDelay = 0.15
+      ret.lateralTuning.torque.latAccelFactor = 1.3
+      ret.steerActuatorDelay = 0.36
       CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
