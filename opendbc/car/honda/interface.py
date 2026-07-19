@@ -190,17 +190,18 @@ class CarInterface(CarInterfaceBase):
       # hold large/sharp curves - stock's 2560 ceiling maxes out and can't. steerActuatorDelay
       # 0.36 matches the liveDelay estimate (~0.365, tiny std) seen in logs. No steering deadzone:
       # stock master runs 0 and steers cleanly on all drives, so we start there and only add one
-      # if future logs actually show friction ping-pong. latAccelFactor seeded to 1.3: the live
-      # torque learner converges to ~1.30-1.33 across four logged drives (routes ...0000008d /
-      # ...0000008c / ...0000008f), well above the 0.9 torque-data default, so this makes the
-      # first ~minute of cold-start steering match the settled feel. The learner still overrides
-      # it at runtime, so this only sets the cold-start floor. Re-verify if it drifts.
+      # if future logs actually show friction ping-pong. latAccelFactor seeded to 1.1: the live
+      # torque learner lands anywhere from ~0.82 (route ...00000095) to ~1.33 (...0000008d/8c/8f)
+      # depending on conditions, so the seed is set to the central value rather than chasing any
+      # one drive. It only shapes the first ~minute of cold-start steering before the learner
+      # takes over - don't tune it further, let the learner own it.
+      # (Odyssey BOSCH_GAS_LOOKUP_V override moved to CarControllerParams.__init__ in values.py
+      # - mutating the class attribute here leaked into other Hondas in-process.)
       # TODO: delete excessive comments before trying to submit a PR.
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 3840], [0, 3840]]
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-      ret.lateralTuning.torque.latAccelFactor = 1.3
+      ret.lateralTuning.torque.latAccelFactor = 1.1
       ret.steerActuatorDelay = 0.36
-      CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
         ret.minSteerSpeed = 70. * CV.KPH_TO_MS
