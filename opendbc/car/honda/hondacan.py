@@ -1,3 +1,5 @@
+import numpy as np
+
 from opendbc.car import CanBusBase
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.honda.values import (HondaFlags, HONDA_BOSCH, HONDA_BOSCH_ALT_RADAR, HONDA_BOSCH_RADARLESS,
@@ -70,14 +72,42 @@ def create_brake_command(packer, CAN, apply_brake, pump_on, pcm_override, pcm_ca
   return packer.make_can_msg("BRAKE_COMMAND", CAN.pt, values)
 
 
-def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_counter, car_fingerprint):
+def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_counter, car_fingerprint, gas_force=None, vego=None):
   commands = []
-  min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+
+  # CUSTOM TUNE (ody-op-long): speed-dependent gas/brake threshold, adapted from opendbc
+  # PR #2342 (github.com/commaai/opendbc/pull/2342). At/above 10 m/s it's the stock -0.2;
+  # below 5 m/s it rises to +0.01 so BRAKE_REQUEST stays on until accel is clearly positive.
+  # This holds the brake through a low-speed stop instead of releasing early (the planner
+  # eases accel back toward 0 before the car is fully stopped, which with the fixed -0.2
+  # threshold dropped the brake and let the van roll through). Only applied when vego is
+  # provided (Odyssey); other Bosch Hondas keep the stock fixed threshold.
+  # TODO: delete excessive comments before trying to submit a PR.
+  if vego is not None:
+    min_gas_accel = float(np.interp(vego, [5.0, 10.0], [0.01, CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]]))
+  else:
+    min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
 
   control_on = 5 if enabled else 0
-  gas_command = gas if active and accel > min_gas_accel else -30000
+  # CUSTOM TUNE (ody-op-long): switch gas/brake on the grade+drag-compensated gas_force when
+  # provided (Odyssey live-learning long control), else stock accel. This only moves the
+  # GAS_COMMAND on/off + BRAKE_REQUEST domain boundary; it does not change ACCEL_COMMAND.
+  #
+  # BUT near a stop, don't let the feedforward decide the domain. On a slight grade the hill
+  # term alone is large: orientationNED pitch ~0.035 rad (seen on route 805f87f5.../00000088)
+  # -> hill_brake = sin(0.035)*9.81 ~ +0.34 m/s^2. Added to gas_force that bias exceeds the
+  # low-speed threshold even while the planner is braking (accel ~ -0.3), so BRAKE_REQUEST
+  # drops and GAS_COMMAND turns on right at the stop -> the automatic creeps into the lead and
+  # the driver has to brake manually. Below 5 m/s we therefore switch on the planner's actual
+  # accel command (self.accel, grade/drag bias stripped) so the brake holds through the stop.
+  # The feedforward still shapes gas magnitude once we're legitimately back in the gas domain.
+  # TODO: delete excessive comments before trying to submit a PR.
+  switch_accel = gas_force if gas_force is not None else accel
+  if vego is not None and vego < 5.0:
+    switch_accel = accel
+  gas_command = gas if active and switch_accel > min_gas_accel else -30000
   accel_command = accel if active else 0
-  braking = 1 if active and accel < min_gas_accel else 0
+  braking = 1 if active and switch_accel < min_gas_accel else 0
   standstill = 1 if active and stopping_counter > 0 else 0
   standstill_release = 1 if active and stopping_counter == 0 else 0
 
