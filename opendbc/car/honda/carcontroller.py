@@ -282,6 +282,13 @@ class CarController(CarControllerBase):
             # Aero drag decel in real m/s^2 (scaled live by self.windfactor; base values from
             # the mvl reference, exact magnitude isn't critical since windfactor learns the
             # residual) and grade term from the low-passed IMU pitch.
+            # DO NOT REMOVE the windfactor/drag term as "dead". On a low-speed route it sits at
+            # its 0.1 floor (drag is negligible there) which looks like a dead knob - but that is
+            # correct speed-adaptive behavior. Verified on-road 2026-07-20 at 69 mph mean:
+            # windfactor floats 0.19-0.20 mean, up to ~0.55 (route 0000000b at floor only 4.3% of
+            # highway frames; storm route 0000000c 28.4%). It carries steady-state cruise gas at
+            # highway speed; removing it would dump that onto the gasfactor learner. It is earning
+            # its keep - keep it.
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
             hill_brake = math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
 
