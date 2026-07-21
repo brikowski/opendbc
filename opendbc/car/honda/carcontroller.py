@@ -28,6 +28,18 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]   # m/s
 GAS_FACTOR_SPEED_V = [0.90, 0.35, 0.45, 0.60]
 
+# CUSTOM TUNE (ody-op-long2): brake-onset smoothing knobs. The command chain (planner ->
+# ACCEL_COMMAND) is already smooth; the "sudden brake" feel comes from (1) the gas/brake
+# domain switch tapping the friction brake in/out when the grade/drag-compensated target
+# hovers at the boundary, and (2) Honda's ECU brake actuator biting past a setpoint it is
+# handed all at once when BRAKE_REQUEST flips on. Both are feedforward fixes - they shape the
+# domain decision and the setpoint we send, and never read brake feedback, so they cannot
+# fight Honda's internal brake PID the way a closed loop would (opendbc #2347).
+DOMAIN_HYST = 0.06        # m/s^2, hysteresis half-band on the gas/brake switch (kills boundary tapping)
+BRAKE_ONSET_JERK = 2.0    # m/s^3, max rate the ACCEL_COMMAND setpoint may deepen on brake entry
+SOFT_BRAKE_FLOOR = -1.2   # m/s^2, only shape mild brakes; firm/emergency braking passes through un-limited
+# TODO: delete excessive comments before trying to submit a PR.
+
 
 def compute_gb_honda_bosch(accel, speed):
   # TODO returns 0s, is unused
@@ -177,6 +189,13 @@ class CarController(CarControllerBase):
                                    pos_limit=0.0, neg_limit=-2.0, rate=50)
     self.brake_pid.reset()
 
+    # CUSTOM TUNE (ody-op-long2): brake-onset smoothing state. in_brake_domain carries the
+    # hysteretic domain across frames; was_braking / brake_ramp drive the setpoint ramp-in.
+    # TODO: delete excessive comments before trying to submit a PR.
+    self.in_brake_domain = False
+    self.was_braking = False
+    self.brake_ramp = 0.0
+
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
@@ -310,10 +329,20 @@ class CarController(CarControllerBase):
             # phantom-windup landmine seen on route 805f87f5.../0000008f) and the gas factors
             # never learn from frames where GAS_COMMAND is actually off.
             # TODO: delete excessive comments before trying to submit a PR.
-            min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, min_gas]))
+            base_min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, min_gas]))
             switch_accel = accel if CS.out.vEgo < 5.0 else gas_pedal_force
+            # CUSTOM TUNE (ody-op-long2): hysteresis band around the threshold. The stock switch
+            # was a hard compare; when grade/drag comp parks switch_accel right at the boundary
+            # (a mild ~-0.5 target on a slight grade) it tapped the friction brake in and out - a
+            # jab the driver feels though the plan is smooth (route 0000000e, ~17:11). Entering
+            # brake now needs switch_accel < min - H, leaving needs > min + H. The effective
+            # threshold (min_gas_accel) is what gets passed to create_acc_commands, so the wire
+            # and the brake_pid gate stay the single source of truth.
+            # TODO: delete excessive comments before trying to submit a PR.
+            min_gas_accel = base_min_gas_accel + (DOMAIN_HYST if self.in_brake_domain else -DOMAIN_HYST)
             in_gas_domain = switch_accel > min_gas_accel
             in_brake_domain = switch_accel < min_gas_accel
+            self.in_brake_domain = in_brake_domain
 
             # Supplemental brake authority: integral-only, one-directional (can only ADD
             # braking). Supplements Honda Bosch's mushy internal brake response; resets any
@@ -324,6 +353,32 @@ class CarController(CarControllerBase):
             else:
               self.brake_pid.reset()
               target_accel = accel
+
+            # CUSTOM TUNE (ody-op-long2): brake-onset jerk limit. ACCEL_COMMAND rides the wire
+            # even in the gas domain, so at the handoff Honda's friction brake is switched on
+            # (BRAKE_REQUEST 0->1) against an already-deep setpoint and bites past it (achieved
+            # -0.9 vs commanded -0.5, route 0000000e). On brake entry, restart the setpoint at the
+            # domain boundary and deepen it no faster than BRAKE_ONSET_JERK, so Honda's own brake
+            # PID eases in instead of grabbing. Feedforward only (never reads brake feedback ->
+            # can't oscillate against Honda's loop, opendbc #2347). Gated to mild targets: firm/
+            # emergency braking (< SOFT_BRAKE_FLOOR) bypasses the ramp, so stopping distance is
+            # never delayed. Release (easing off) is never rate-limited, only deepening. ACC runs
+            # at 50 Hz here (frame % 2), so dt = 2 * DT_CTRL.
+            # TODO: delete excessive comments before trying to submit a PR.
+            entering_brake = in_brake_domain and not self.was_braking
+            self.was_braking = in_brake_domain
+            if in_brake_domain and target_accel > SOFT_BRAKE_FLOOR:
+              if entering_brake:
+                # Seed the ramp at the car's current decel, clamped to [target, boundary]. A
+                # coast->brake entry (aEgo shallow) eases in from the boundary; a re-entry while
+                # already decelerating (aEgo already deep) starts at target - so residual domain
+                # chatter never shallows the brake or adds a reset step (hysteresis above should
+                # prevent the chatter; this makes it harmless if any slips through).
+                self.brake_ramp = max(target_accel, min(CS.out.aEgo, min_gas_accel))
+              self.brake_ramp = max(target_accel, self.brake_ramp - BRAKE_ONSET_JERK * 2 * DT_CTRL)
+              target_accel = self.brake_ramp
+            else:
+              self.brake_ramp = target_accel
             self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             # Speed-scheduled baseline gasfactor; self.gasfactor is the live-learned residual
