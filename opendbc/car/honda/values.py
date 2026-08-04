@@ -49,6 +49,15 @@ class CarControllerParams:
     self.STEER_LOOKUP_BP = [v * -1 for v in CP.lateralParams.torqueBP][1:][::-1] + list(CP.lateralParams.torqueBP)
     self.STEER_LOOKUP_V = [v * -1 for v in CP.lateralParams.torqueV][1:][::-1] + list(CP.lateralParams.torqueV)
 
+    # CUSTOM TUNE (ody-op-long): per-car gas lookup ceiling as an INSTANCE attribute.
+    # interface.py used to mutate the class attribute (CarControllerParams.BOSCH_GAS_LOOKUP_V),
+    # which leaks into every other Honda constructed in the same process (visible as
+    # cross-car contamination in test_car_interfaces). Upstream still does the class
+    # mutation for ACURA_RDX_3G_MMR in interface.py; ours is scoped here instead.
+    # TODO: delete excessive comments before trying to submit a PR.
+    if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      self.BOSCH_GAS_LOOKUP_V = [0, 2000]
+
 
 class HondaSafetyFlags(IntFlag):
   ALT_BRAKE = 1

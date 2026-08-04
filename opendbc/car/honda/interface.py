@@ -188,8 +188,8 @@ class CarInterface(CarInterfaceBase):
       #ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560, 3072], [0, 2560, 3840]]
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560], [0, 2560]]
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-      ret.steerActuatorDelay = 0.15
-      CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
+      # lagd adds 0.20 s, producing the validated 0.40 s cold-start fallback.
+      ret.steerActuatorDelay = 0.20
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
         ret.minSteerSpeed = 70. * CV.KPH_TO_MS
