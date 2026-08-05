@@ -23,6 +23,8 @@ BRAKE_PID_KI = 0.5
 
 # Brake entry uses the base threshold; release adds speed-ramped hysteresis to limit descent chatter.
 DOMAIN_HYST_EXIT = 0.50
+# Do not carry hysteresis through a meaningful acceleration request unless grade still requires brake.
+BRAKE_DOMAIN_REQUEST_EXIT = 0.02
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -253,7 +255,7 @@ class CarController(CarControllerBase):
               self.in_brake_domain = False
             elif switch_accel < min_gas_accel:
               self.in_brake_domain = True
-            elif switch_accel > min_gas_accel + domain_hyst_exit:
+            elif accel > BRAKE_DOMAIN_REQUEST_EXIT or switch_accel > min_gas_accel + domain_hyst_exit:
               self.in_brake_domain = False
             in_brake_domain = self.in_brake_domain
             in_gas_domain = not in_brake_domain
