@@ -74,23 +74,14 @@ def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_count
                         brake_domain=None):
   commands = []
 
-  # CUSTOM TUNE (ody-op-long): the Odyssey carcontroller passes its own gas/brake domain
-  # inputs - switch_accel (grade/drag-compensated at speed, raw planner accel below 5 m/s)
-  # and a speed-raised min_gas_accel threshold (PR #2342 stop-hold). The single source of
-  # truth for that decision lives in carcontroller.py next to the brake_pid gate; this
-  # function just applies it to the wire. Stock Bosch Hondas pass neither and keep the
-  # upstream fixed-threshold behavior. Only the GAS_COMMAND on/off + BRAKE_REQUEST domain
-  # boundary moves; ACCEL_COMMAND is untouched.
-  # TODO: delete excessive comments before trying to submit a PR.
+  # Odyssey supplies its stateful domain decision; other Bosch cars retain the stock threshold.
   if min_gas_accel is None:
     min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
   if switch_accel is None:
     switch_accel = accel
 
   control_on = 5 if enabled else 0
-  # brake_domain, when supplied, is the carcontroller's DECIDED domain and overrides the bare
-  # per-frame compare. It has to: the hysteresis there makes the decision stateful, and recomputing
-  # it here would put a different answer on the wire than the one brake_pid gated on.
+  # Mirror the controller's stateful decision on the wire when supplied.
   gas_dom = (switch_accel > min_gas_accel) if brake_domain is None else (not brake_domain)
   brake_dom = (switch_accel < min_gas_accel) if brake_domain is None else brake_domain
   gas_command = gas if active and gas_dom else -30000
