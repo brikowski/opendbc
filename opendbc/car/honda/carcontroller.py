@@ -21,10 +21,10 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 # Supplemental integral braking is one-sided; Honda's ECU remains the primary brake loop.
 BRAKE_PID_KI = 0.5
 
+# Keep actuator-domain policy separate from the gas lookup's signal-scaling floor.
+BRAKE_DOMAIN_ENTRY = -0.20
 # Brake entry uses the base threshold; release adds speed-ramped hysteresis to limit descent chatter.
 DOMAIN_HYST_EXIT = 0.50
-# Do not carry hysteresis through a meaningful acceleration request unless grade still requires brake.
-BRAKE_DOMAIN_REQUEST_EXIT = 0.02
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -247,7 +247,7 @@ class CarController(CarControllerBase):
 
             # Raw planner accel below 5 m/s prevents grade compensation from releasing a stop.
             # This decision also gates the brake PID, learning, and the CAN domain.
-            min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, min_gas]))
+            min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, BRAKE_DOMAIN_ENTRY]))
             switch_accel = accel if CS.out.vEgo < 5.0 else gas_pedal_force
             # Apply hysteresis only on release and reset it while inactive to prevent stale braking.
             domain_hyst_exit = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.0, DOMAIN_HYST_EXIT]))
@@ -255,7 +255,7 @@ class CarController(CarControllerBase):
               self.in_brake_domain = False
             elif switch_accel < min_gas_accel:
               self.in_brake_domain = True
-            elif accel > BRAKE_DOMAIN_REQUEST_EXIT or switch_accel > min_gas_accel + domain_hyst_exit:
+            elif switch_accel > min_gas_accel + domain_hyst_exit:
               self.in_brake_domain = False
             in_brake_domain = self.in_brake_domain
             in_gas_domain = not in_brake_domain
