@@ -22,7 +22,22 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 BRAKE_PID_KI = 0.5
 
 # Keep actuator-domain policy separate from the gas lookup's signal-scaling floor.
-BRAKE_DOMAIN_ENTRY = -0.20
+# CUSTOM TUNE (road candidate, 2026-08-06): -0.20 -> -0.30. This moves the band's POSITION; the
+# width (DOMAIN_HYST_EXIT) is untouched, and those are different axes. Width was swept before and
+# traded ~1:1 against descent chatter; position had never been swept. Reason for the change: because
+# switch_accel carries hill_brake, a -1.5 deg descent entered the brake domain while the planner
+# still wanted +0.03 and did not release until +0.53, and withheld GAS_COMMAND drops the engine into
+# overrun (-103/-164 torque vs +311 in the gas domain), so the car kept losing speed against a
+# POSITIVE request - driver-reported, routes 0000000d/00000006.
+# Open-loop over 0000000d+00000003 (state machine validated at 99.8%/98.9% against the logged wire):
+# descent hold vs positive request 74.3s -> 29.8s (-60%), brake duty 7.2% -> 4.5%, descent toggles
+# 6.1 -> 6.5/min (flat - NOT the 1:1 trade width showed). Cost: 132.5s (2.74% of engaged time) moves
+# brake->gas domain; request there averages ~0, but p10 is -0.37 and gas has no braking authority
+# below ~-0.2, so late brake onset is the thing to watch on road.
+# Open-loop crossing rates underpredict ~2.7x and cannot model feedback - THIS IS NOT VALIDATED.
+# Revert to -0.20 if brake onset feels late or stopping distances grow.
+# TODO: delete excessive comments before trying to submit a PR.
+BRAKE_DOMAIN_ENTRY = -0.30
 # Brake entry uses the base threshold; release adds speed-ramped hysteresis to limit descent chatter.
 DOMAIN_HYST_EXIT = 0.50
 
