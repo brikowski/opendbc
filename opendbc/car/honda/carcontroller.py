@@ -27,7 +27,6 @@ BRAKE_PID_KI = 0.5
 # descents held the brake domain against a positive request and engine-braked the car in overrun.
 # Revert to -0.20 if brake onset feels late or stopping distances grow. Numbers and the road gate
 # live in .agents/tune-evidence.md ("Current Validation Arm").
-# TODO: delete excessive comments before trying to submit a PR.
 BRAKE_DOMAIN_ENTRY = -0.30
 # Brake entry uses the base threshold; release adds speed-ramped hysteresis to limit descent chatter.
 DOMAIN_HYST_EXIT = 0.50
