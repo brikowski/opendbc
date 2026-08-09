@@ -21,12 +21,8 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 # Supplemental integral braking is one-sided; Honda's ECU remains the primary brake loop.
 BRAKE_PID_KI = 0.5
 
-# Keep actuator-domain policy separate from the gas lookup's signal-scaling floor.
-# CUSTOM TUNE (road candidate 2026-08-06, NOT validated): -0.20 -> -0.30 moves the band's POSITION;
-# width (DOMAIN_HYST_EXIT) is a different axis and stays put. Grade rides the decision input, so
-# descents held the brake domain against a positive request and engine-braked the car in overrun.
-# Revert to -0.20 if brake onset feels late or stopping distances grow. Numbers and the road gate
-# live in .agents/tune-evidence.md ("Current Validation Arm").
+# Lower the domain band to reduce descent engine-braking holds without narrowing release hysteresis.
+# Revert if this delays brake onset or increases stopping distance.
 BRAKE_DOMAIN_ENTRY = -0.30
 # Brake entry uses the base threshold; release adds speed-ramped hysteresis to limit descent chatter.
 DOMAIN_HYST_EXIT = 0.50
@@ -243,15 +239,16 @@ class CarController(CarControllerBase):
 
             min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
 
-            # Drag and filtered grade feedforward affect gas only.
+            # Drag and filtered grade form the gas feedforward and compensated domain signal;
+            # they never add brake authority to ACCEL_COMMAND.
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
             hill_brake = math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
 
             # Keep supplemental braking out of the gas feedforward input.
             gas_pedal_force = accel + wind_brake_ms2 * self.windfactor + hill_brake
 
-            # Raw planner accel below 5 m/s prevents grade compensation from releasing a stop.
-            # This decision also gates the brake PID, learning, and the CAN domain.
+            # The controller request below 5 m/s prevents grade compensation from releasing a stop.
+            # This decision also gates the brake PID, gasfactor learning, and the CAN domain.
             min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, BRAKE_DOMAIN_ENTRY]))
             switch_accel = accel if CS.out.vEgo < 5.0 else gas_pedal_force
             # Apply hysteresis only on release and reset it while inactive to prevent stale braking.
@@ -278,7 +275,7 @@ class CarController(CarControllerBase):
             # Learn a residual around the speed-scheduled baseline.
             base_gasfactor = float(np.interp(CS.out.vEgo, GAS_FACTOR_SPEED_BP, GAS_FACTOR_SPEED_V))
 
-            # Learn only while openpilot controls longitudinal and the driver is not overriding.
+            # Update learners only in PID state; each learner applies its own domain and pedal gates.
             if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
               gas_error = self.accel - CS.out.aEgo
               # Do not learn where no positive gas signal exists.
