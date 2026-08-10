@@ -131,7 +131,7 @@ class CarController(CarControllerBase):
     # Filter pitch before applying bidirectional grade feedforward.
     self.pitch = FirstOrderFilter(0.0, 0.5, DT_CTRL)
     self.gasfactor = 1.0            # residual trim on top of the speed-scheduled baseline
-    self.gasfactor_effective = 1.0  # base(vEgo) * trim, exposed in telemetry (updated in update())
+    self.gasfactor_effective = 1.0  # base(vEgo) * trim; fork-only telemetry until actuator fields are restored
     self.windfactor = 0.5
     # Preserve pre-saturation values so learning cannot wind farther into a rail.
     self.gasfactor_before_gasmax = self.gasfactor
@@ -357,7 +357,7 @@ class CarController(CarControllerBase):
     new_actuators.speed = self.speed
     new_actuators.accel = self.accel
     if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-      # Expose learned factors here; actual commands remain available in sendcan.
+      # Fork-only instrumentation; restore actuator-output semantics before upstreaming.
       new_actuators.gas = float(self.gasfactor_effective)
       new_actuators.brake = float(self.windfactor)
     else:
