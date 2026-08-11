@@ -186,8 +186,7 @@ class CarInterface(CarInterfaceBase):
       # Use the stock LKA range; RDM's higher range relies on separate braking we do not command.
       ret.lateralParams.torqueBP, ret.lateralParams.torqueV = [[0, 2560], [0, 2560]]
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-      # lagd adds 0.20 s to this cold-start fallback.
-      ret.steerActuatorDelay = 0.20
+      ret.steerActuatorDelay = 0.15
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
         ret.minSteerSpeed = 70. * CV.KPH_TO_MS

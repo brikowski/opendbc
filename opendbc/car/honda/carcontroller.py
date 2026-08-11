@@ -21,11 +21,11 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 # Supplemental integral braking is one-sided; Honda's ECU remains the primary brake loop.
 BRAKE_PID_KI = 0.5
 
-# Lower the domain band to reduce descent engine-braking holds without narrowing release hysteresis.
+# Lower the domain band to reduce descent engine-braking holds.
 # Revert if this delays brake onset or increases stopping distance.
 BRAKE_DOMAIN_ENTRY = -0.30
-# Brake entry uses the base threshold; release adds speed-ramped hysteresis to limit descent chatter.
-DOMAIN_HYST_EXIT = 0.50
+# Release hysteresis is speed-ramped; reject this narrower candidate if descent tapping returns.
+DOMAIN_HYST_EXIT = 0.20
 
 
 def compute_gb_honda_bosch(accel, speed):
