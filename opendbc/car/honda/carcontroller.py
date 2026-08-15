@@ -5,7 +5,6 @@ import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
 from opendbc.car.common.filter_simple import FirstOrderFilter
-from opendbc.car.common.pid import PIDController
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HONDA_BOSCH, HONDA_BOSCH_CANFD, HONDA_BOSCH_RADARLESS, \
                                      HONDA_BOSCH_TJA_CONTROL, HONDA_NIDEC_ALT_PCM_ACCEL, CarControllerParams
@@ -17,30 +16,6 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 # Odyssey gas scale baseline; gasfactor learns a per-drive residual around it.
 GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]   # m/s
 GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
-
-# Supplemental integral braking is one-sided; Honda's ECU remains the primary brake loop.
-BRAKE_PID_KI = 0.5
-
-# Lower the domain band to reduce descent engine-braking holds.
-# Revert if this delays brake onset or increases stopping distance.
-BRAKE_DOMAIN_ENTRY = -0.30
-# Release hysteresis is speed-ramped; reject this narrower candidate if descent tapping returns.
-DOMAIN_HYST_EXIT = 0.20
-
-# Shape only ordinary road-speed brake entry. Strong braking, stopping, and low speed retain
-# immediate authority; release is never delayed.
-BRAKE_ONSET_MIN_VEGO = 10.0
-BRAKE_ONSET_INITIAL_ACCEL = -0.10
-BRAKE_ONSET_RATE = 0.60
-BRAKE_ONSET_BYPASS_ACCEL = -1.5
-
-
-def odyssey_domain_switch_accel(accel, gas_pedal_force, speed):
-  """Keep the validator and controller on the same Odyssey domain-decision input."""
-  if np.isscalar(speed):
-    return accel if speed < 5.0 else gas_pedal_force
-  return np.where(np.asarray(speed) < 5.0, accel, gas_pedal_force)
-
 
 def compute_gb_honda_bosch(accel, speed):
   # TODO returns 0s, is unused
@@ -140,7 +115,7 @@ class CarController(CarControllerBase):
     self.brake = 0.0
     self.last_torque = 0.0
 
-    # Odyssey Bosch feedforward and supplemental-brake state.
+    # Odyssey Bosch gas feedforward state.
     self.bosch_last_gas = 0
     # Filter pitch before applying bidirectional grade feedforward.
     self.pitch = FirstOrderFilter(0.0, 0.5, DT_CTRL)
@@ -150,14 +125,6 @@ class CarController(CarControllerBase):
     # Preserve pre-saturation values so learning cannot wind farther into a rail.
     self.gasfactor_before_gasmax = self.gasfactor
     self.windfactor_before_brake = self.windfactor_before_gasmax = self.windfactor
-
-    # One-sided controller may add braking but never oppose Honda's closed-loop brake control.
-    self.brake_pid = PIDController(k_p=([0.], [0.]), k_i=([0.], [BRAKE_PID_KI]),
-                                   pos_limit=0.0, neg_limit=-2.0, rate=50)
-    self.brake_pid.reset()
-    self.in_brake_domain = False   # hysteretic domain state (see DOMAIN_HYST_EXIT)
-    self.brake_onset_active = False
-    self.brake_onset_accel = 0.0
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -252,68 +219,20 @@ class CarController(CarControllerBase):
 
         if self.CP.carFingerprint in HONDA_BOSCH:
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-            # Odyssey-only Bosch longitudinal calibration.
+            # Odyssey-only gas calibration; braking retains Honda's stock command semantics.
 
             min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
 
-            # Drag and filtered grade form the gas feedforward and compensated domain signal;
-            # they never add brake authority to ACCEL_COMMAND.
+            # Drag and filtered grade feed the opaque gas command only. ACCEL_COMMAND and the
+            # gas/brake split continue to use the unmodified controller request.
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
             hill_brake = math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
-
-            # Keep supplemental braking out of the gas feedforward input.
             gas_pedal_force = accel + wind_brake_ms2 * self.windfactor + hill_brake
 
-            # The controller request below 5 m/s prevents grade compensation from releasing a stop.
-            # This decision also gates the brake PID, gasfactor learning, and the CAN domain.
-            min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, BRAKE_DOMAIN_ENTRY]))
-            switch_accel = odyssey_domain_switch_accel(accel, gas_pedal_force, CS.out.vEgo)
-            # Apply hysteresis only on release and reset it while inactive to prevent stale braking.
-            domain_hyst_exit = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.0, DOMAIN_HYST_EXIT]))
-            was_brake_domain = self.in_brake_domain
-            if not CC.longActive:
-              self.in_brake_domain = False
-            elif switch_accel < min_gas_accel:
-              self.in_brake_domain = True
-            elif switch_accel > min_gas_accel + domain_hyst_exit:
-              self.in_brake_domain = False
-            in_brake_domain = self.in_brake_domain
-            in_gas_domain = not in_brake_domain
-            brake_domain = in_brake_domain
-
-            # Reset outside the wire's brake domain to prevent stale re-engagement commands.
-            if in_brake_domain and (CS.out.vEgo > 1e-3):
-              brake_addon = self.brake_pid.update(error=accel - CS.out.aEgo, speed=CS.out.vEgo)
-              target_accel = min(accel, accel + brake_addon)
-            else:
-              self.brake_pid.reset()
-              target_accel = accel
-
-            ordinary_brake_entry = (
-              in_brake_domain and not was_brake_domain and CC.longActive and
-              CS.out.vEgo >= BRAKE_ONSET_MIN_VEGO and not stopping and
-              accel > BRAKE_ONSET_BYPASS_ACCEL
-            )
-            bypass_brake_onset = (
-              not in_brake_domain or not CC.longActive or stopping or
-              CS.out.vEgo < BRAKE_ONSET_MIN_VEGO or accel <= BRAKE_ONSET_BYPASS_ACCEL
-            )
-            if ordinary_brake_entry:
-              self.brake_onset_active = True
-              self.brake_onset_accel = BRAKE_ONSET_INITIAL_ACCEL
-              target_accel = max(target_accel, self.brake_onset_accel)
-            elif bypass_brake_onset:
-              self.brake_onset_active = False
-              self.brake_onset_accel = target_accel
-            elif self.brake_onset_active:
-              next_onset_accel = self.brake_onset_accel - BRAKE_ONSET_RATE * 2 * DT_CTRL
-              if target_accel >= next_onset_accel:
-                self.brake_onset_active = False
-                self.brake_onset_accel = target_accel
-              else:
-                self.brake_onset_accel = next_onset_accel
-                target_accel = self.brake_onset_accel
-            self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+            # Match the stateless upstream Honda split on the raw controller request.
+            brake_selected = accel < min_gas
+            gas_selected = accel > min_gas
+            self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             # Learn a residual around the speed-scheduled baseline.
             base_gasfactor = float(np.interp(CS.out.vEgo, GAS_FACTOR_SPEED_BP, GAS_FACTOR_SPEED_V))
@@ -322,14 +241,14 @@ class CarController(CarControllerBase):
             if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
               gas_error = self.accel - CS.out.aEgo
               # Do not learn where no positive gas signal exists.
-              if in_gas_domain and gas_pedal_force > min_gas:
+              if gas_selected and gas_pedal_force > min_gas:
                 learn_divisor = np.interp(CS.out.vEgo, [0., 15., 25.], [150, 200, 400])
                 self.gasfactor = np.clip(self.gasfactor + gas_error / learn_divisor * (gas_pedal_force - min_gas), 0.01, 3.0)
               if (not CS.out.brakePressed) and (CS.out.vEgo > 0.0):
                 wind_learn_divisor = 500
                 wind_adjust = 1 + wind_brake_ms2 / wind_learn_divisor
                 self.windfactor = np.clip(self.windfactor * (wind_adjust if (gas_error > 0) else 1.0 / wind_adjust), 0.1, 3.0)
-              if in_brake_domain:
+              if brake_selected:
                 self.windfactor = max(self.windfactor, self.windfactor_before_brake)
               else:
                 self.windfactor_before_brake = self.windfactor
@@ -345,7 +264,7 @@ class CarController(CarControllerBase):
             requested_gas = float(np.interp((gas_pedal_force - min_gas) * self.gasfactor_effective + min_gas,
                                              self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
             # Reset while inactive or braking so every live gas handoff starts at <=60 counts.
-            if CC.longActive and in_gas_domain:
+            if CC.longActive and gas_selected:
               self.gas = min(requested_gas, self.bosch_last_gas + 60)
               self.bosch_last_gas = self.gas
             else:
@@ -355,14 +274,10 @@ class CarController(CarControllerBase):
             # Other Bosch Hondas retain the stock fixed threshold and raw accel input.
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
             self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
-            switch_accel = None
-            min_gas_accel = None
-            brake_domain = None
 
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                                        self.stopping_counter, self.CP.carFingerprint, switch_accel, min_gas_accel,
-                                                        brake_domain))
+                                                        self.stopping_counter, self.CP.carFingerprint))
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))

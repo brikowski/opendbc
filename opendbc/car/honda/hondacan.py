@@ -70,23 +70,14 @@ def create_brake_command(packer, CAN, apply_brake, pump_on, pcm_override, pcm_ca
   return packer.make_can_msg("BRAKE_COMMAND", CAN.pt, values)
 
 
-def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_counter, car_fingerprint, switch_accel=None, min_gas_accel=None,
-                        brake_domain=None):
+def create_acc_commands(packer, CAN, enabled, active, accel, gas, stopping_counter, car_fingerprint):
   commands = []
-
-  # Odyssey supplies its stateful domain decision; other Bosch cars retain the stock threshold.
-  if min_gas_accel is None:
-    min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
-  if switch_accel is None:
-    switch_accel = accel
+  min_gas_accel = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
 
   control_on = 5 if enabled else 0
-  # Mirror the controller's stateful decision on the wire when supplied.
-  gas_dom = (switch_accel > min_gas_accel) if brake_domain is None else (not brake_domain)
-  brake_dom = (switch_accel < min_gas_accel) if brake_domain is None else brake_domain
-  gas_command = gas if active and gas_dom else -30000
+  gas_command = gas if active and accel > min_gas_accel else -30000
   accel_command = accel if active else 0
-  braking = 1 if active and brake_dom else 0
+  braking = 1 if active and accel < min_gas_accel else 0
   standstill = 1 if active and stopping_counter > 0 else 0
   standstill_release = 1 if active and stopping_counter == 0 else 0
 
