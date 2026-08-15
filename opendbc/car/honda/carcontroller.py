@@ -27,6 +27,13 @@ BRAKE_DOMAIN_ENTRY = -0.30
 # Release hysteresis is speed-ramped; reject this narrower candidate if descent tapping returns.
 DOMAIN_HYST_EXIT = 0.20
 
+# Shape only ordinary road-speed brake entry. Strong braking, stopping, and low speed retain
+# immediate authority; release is never delayed.
+BRAKE_ONSET_MIN_VEGO = 10.0
+BRAKE_ONSET_INITIAL_ACCEL = -0.10
+BRAKE_ONSET_RATE = 0.60
+BRAKE_ONSET_BYPASS_ACCEL = -1.5
+
 
 def odyssey_domain_switch_accel(accel, gas_pedal_force, speed):
   """Keep the validator and controller on the same Odyssey domain-decision input."""
@@ -149,6 +156,8 @@ class CarController(CarControllerBase):
                                    pos_limit=0.0, neg_limit=-2.0, rate=50)
     self.brake_pid.reset()
     self.in_brake_domain = False   # hysteretic domain state (see DOMAIN_HYST_EXIT)
+    self.brake_onset_active = False
+    self.brake_onset_accel = 0.0
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -239,6 +248,7 @@ class CarController(CarControllerBase):
       # Send gas and brake commands.
       if self.frame % 2 == 0:
         ts = self.frame * DT_CTRL
+        stopping = actuators.longControlState == LongCtrlState.stopping
 
         if self.CP.carFingerprint in HONDA_BOSCH:
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
@@ -260,6 +270,7 @@ class CarController(CarControllerBase):
             switch_accel = odyssey_domain_switch_accel(accel, gas_pedal_force, CS.out.vEgo)
             # Apply hysteresis only on release and reset it while inactive to prevent stale braking.
             domain_hyst_exit = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.0, DOMAIN_HYST_EXIT]))
+            was_brake_domain = self.in_brake_domain
             if not CC.longActive:
               self.in_brake_domain = False
             elif switch_accel < min_gas_accel:
@@ -277,6 +288,31 @@ class CarController(CarControllerBase):
             else:
               self.brake_pid.reset()
               target_accel = accel
+
+            ordinary_brake_entry = (
+              in_brake_domain and not was_brake_domain and CC.longActive and
+              CS.out.vEgo >= BRAKE_ONSET_MIN_VEGO and not stopping and
+              accel > BRAKE_ONSET_BYPASS_ACCEL
+            )
+            bypass_brake_onset = (
+              not in_brake_domain or not CC.longActive or stopping or
+              CS.out.vEgo < BRAKE_ONSET_MIN_VEGO or accel <= BRAKE_ONSET_BYPASS_ACCEL
+            )
+            if ordinary_brake_entry:
+              self.brake_onset_active = True
+              self.brake_onset_accel = BRAKE_ONSET_INITIAL_ACCEL
+              target_accel = max(target_accel, self.brake_onset_accel)
+            elif bypass_brake_onset:
+              self.brake_onset_active = False
+              self.brake_onset_accel = target_accel
+            elif self.brake_onset_active:
+              next_onset_accel = self.brake_onset_accel - BRAKE_ONSET_RATE * 2 * DT_CTRL
+              if target_accel >= next_onset_accel:
+                self.brake_onset_active = False
+                self.brake_onset_accel = target_accel
+              else:
+                self.brake_onset_accel = next_onset_accel
+                target_accel = self.brake_onset_accel
             self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             # Learn a residual around the speed-scheduled baseline.
@@ -323,7 +359,6 @@ class CarController(CarControllerBase):
             min_gas_accel = None
             brake_domain = None
 
-          stopping = actuators.longControlState == LongCtrlState.stopping
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
                                                         self.stopping_counter, self.CP.carFingerprint, switch_accel, min_gas_accel,
