@@ -28,6 +28,13 @@ BRAKE_DOMAIN_ENTRY = -0.30
 DOMAIN_HYST_EXIT = 0.20
 
 
+def odyssey_domain_switch_accel(accel, gas_pedal_force, speed):
+  """Keep the validator and controller on the same Odyssey domain-decision input."""
+  if np.isscalar(speed):
+    return accel if speed < 5.0 else gas_pedal_force
+  return np.where(np.asarray(speed) < 5.0, accel, gas_pedal_force)
+
+
 def compute_gb_honda_bosch(accel, speed):
   # TODO returns 0s, is unused
   return 0.0, 0.0
@@ -250,7 +257,7 @@ class CarController(CarControllerBase):
             # The controller request below 5 m/s prevents grade compensation from releasing a stop.
             # This decision also gates the brake PID, gasfactor learning, and the CAN domain.
             min_gas_accel = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.01, BRAKE_DOMAIN_ENTRY]))
-            switch_accel = accel if CS.out.vEgo < 5.0 else gas_pedal_force
+            switch_accel = odyssey_domain_switch_accel(accel, gas_pedal_force, CS.out.vEgo)
             # Apply hysteresis only on release and reset it while inactive to prevent stale braking.
             domain_hyst_exit = float(np.interp(CS.out.vEgo, [5.0, 10.0], [0.0, DOMAIN_HYST_EXIT]))
             if not CC.longActive:
