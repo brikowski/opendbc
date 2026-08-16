@@ -17,6 +17,19 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]   # m/s
 GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 
+ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
+ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+
+
+def odyssey_command_domains(accel, speed):
+  """Keep stop authority at low speed and coast through small road-speed decel requests."""
+  gas_selected = np.asarray(accel) > 0.0
+  brake_selected = np.where(np.asarray(speed) < ODYSSEY_LOW_SPEED_DOMAIN_VEGO,
+                            np.asarray(accel) <= 0.0, np.asarray(accel) < ODYSSEY_ROAD_BRAKE_ENTRY)
+  if np.isscalar(accel) and np.isscalar(speed):
+    return bool(gas_selected), bool(brake_selected)
+  return gas_selected, brake_selected
+
 def compute_gb_honda_bosch(accel, speed):
   # TODO returns 0s, is unused
   return 0.0, 0.0
@@ -219,19 +232,19 @@ class CarController(CarControllerBase):
 
         if self.CP.carFingerprint in HONDA_BOSCH:
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-            # Odyssey-only gas calibration; braking retains Honda's stock command semantics.
+            # Odyssey-only gas calibration and command-domain selection.
 
             min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
 
             # Drag and filtered grade feed the opaque gas command only. ACCEL_COMMAND and the
-            # gas/brake split continue to use the unmodified controller request.
+            # gas/brake split use the unmodified controller request.
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
             hill_brake = math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
             gas_pedal_force = accel + wind_brake_ms2 * self.windfactor + hill_brake
 
-            # Match the stateless upstream Honda split on the raw controller request.
-            brake_selected = accel < min_gas
-            gas_selected = accel > min_gas
+            # Honda's binary brake bit is too abrupt for small road-speed corrections. Leave a
+            # neutral coast band there, while non-positive low-speed requests retain stop authority.
+            gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo)
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             # Learn a residual around the speed-scheduled baseline.
@@ -274,10 +287,12 @@ class CarController(CarControllerBase):
             # Other Bosch Hondas retain the stock fixed threshold and raw accel input.
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
             self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            gas_selected = None
+            brake_selected = None
 
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                                        self.stopping_counter, self.CP.carFingerprint))
+                                                        self.stopping_counter, self.CP.carFingerprint, gas_selected, brake_selected))
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
