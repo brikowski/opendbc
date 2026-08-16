@@ -129,7 +129,6 @@ class CarController(CarControllerBase):
     self.last_torque = 0.0
 
     # Odyssey Bosch gas feedforward state.
-    self.bosch_last_gas = 0
     # Filter pitch before applying bidirectional grade feedforward.
     self.pitch = FirstOrderFilter(0.0, 0.5, DT_CTRL)
     self.gasfactor = 1.0            # residual trim on top of the speed-scheduled baseline
@@ -276,13 +275,8 @@ class CarController(CarControllerBase):
             self.gasfactor_effective = base_gasfactor * self.gasfactor
             requested_gas = float(np.interp((gas_pedal_force - min_gas) * self.gasfactor_effective + min_gas,
                                              self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
-            # Reset while inactive or braking so every live gas handoff starts at <=60 counts.
-            if CC.longActive and gas_selected:
-              self.gas = min(requested_gas, self.bosch_last_gas + 60)
-              self.bosch_last_gas = self.gas
-            else:
-              self.gas = 0.0
-              self.bosch_last_gas = 0.0
+            # Apply the calculated gas immediately; lifecycle and domain gates remain explicit.
+            self.gas = requested_gas if CC.longActive and gas_selected else 0.0
           else:
             # Other Bosch Hondas retain the stock fixed threshold and raw accel input.
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
