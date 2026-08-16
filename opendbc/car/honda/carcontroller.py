@@ -16,13 +16,26 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+ODYSSEY_ROAD_GAS_RELEASE = -0.02
 
 
-def odyssey_command_domains(accel, speed):
-  """Keep stop authority at low speed and coast through small road-speed decel requests."""
-  gas_selected = np.asarray(accel) > 0.0
-  brake_selected = np.where(np.asarray(speed) < ODYSSEY_LOW_SPEED_DOMAIN_VEGO,
-                            np.asarray(accel) <= 0.0, np.asarray(accel) < ODYSSEY_ROAD_BRAKE_ENTRY)
+def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
+  """Keep low-speed stop authority and prevent near-zero road-speed gas pulsing."""
+  accel_array = np.asarray(accel)
+  speed_array = np.asarray(speed)
+  gas_selected = accel_array > 0.0
+  road_speed = speed_array >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO
+  gas_selected = np.where(road_speed,
+                          gas_selected | (bool(previous_gas) & (accel_array > ODYSSEY_ROAD_GAS_RELEASE)),
+                          gas_selected)
+  brake_selected = np.where(speed_array < ODYSSEY_LOW_SPEED_DOMAIN_VEGO,
+                            accel_array <= 0.0,
+                            (accel_array < ODYSSEY_ROAD_BRAKE_ENTRY) |
+                            (bool(previous_brake) & (accel_array < 0.0)))
+  # A positive request must release the brake domain immediately so the two commands remain
+  # mutually exclusive, matching Ford/Toyota's stateful brake-permit pattern without holding
+  # friction braking through a meaningful acceleration request.
+  brake_selected = np.where(gas_selected, False, brake_selected)
   if np.isscalar(accel) and np.isscalar(speed):
     return bool(gas_selected), bool(brake_selected)
   return gas_selected, brake_selected
@@ -124,6 +137,8 @@ class CarController(CarControllerBase):
     self.gas = 0.0
     self.brake = 0.0
     self.last_torque = 0.0
+    self.odyssey_brake_selected = False
+    self.odyssey_gas_selected = False
 
     # Odyssey Bosch gas feedforward state.
     self.gasfactor = 1.0            # residual trim on top of the speed-scheduled baseline
@@ -145,6 +160,8 @@ class CarController(CarControllerBase):
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
+      self.odyssey_brake_selected = False
+      self.odyssey_gas_selected = False
 
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
@@ -233,9 +250,15 @@ class CarController(CarControllerBase):
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
             gas_pedal_force = accel
 
-            # Honda's binary brake bit is too abrupt for small road-speed corrections. Leave a
-            # neutral coast band there, while non-positive low-speed requests retain stop authority.
-            gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo)
+            # Honda's binary domains are too abrupt for small road-speed corrections. Keep a narrow
+            # gas-release band to avoid live/inactive pulsing, while non-positive low-speed requests
+            # retain stop authority and the wider road-speed coast band remains unchanged.
+            gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
+                                                                    self.odyssey_brake_selected,
+                                                                    self.odyssey_gas_selected)
+            if CC.longActive:
+              self.odyssey_brake_selected = brake_selected
+              self.odyssey_gas_selected = gas_selected
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             # Learn a residual around the speed-scheduled baseline.
@@ -245,7 +268,7 @@ class CarController(CarControllerBase):
             if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
               gas_error = self.accel - CS.out.aEgo
               # Do not learn where no positive gas signal exists.
-              if gas_selected and gas_pedal_force > min_gas:
+              if gas_selected and gas_pedal_force > 0.0:
                 learn_divisor = np.interp(CS.out.vEgo, [0., 15., 25.], [150, 200, 400])
                 self.gasfactor = np.clip(self.gasfactor + gas_error / learn_divisor * (gas_pedal_force - min_gas), 0.01, 3.0)
               if (not CS.out.brakePressed) and (CS.out.vEgo > 0.0):
