@@ -1,10 +1,7 @@
-import math
-
 import numpy as np
 
 from opendbc.can import CANPacker
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
-from opendbc.car.common.filter_simple import FirstOrderFilter
+from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HONDA_BOSCH, HONDA_BOSCH_CANFD, HONDA_BOSCH_RADARLESS, \
                                      HONDA_BOSCH_TJA_CONTROL, HONDA_NIDEC_ALT_PCM_ACCEL, CarControllerParams
@@ -129,11 +126,9 @@ class CarController(CarControllerBase):
     self.last_torque = 0.0
 
     # Odyssey Bosch gas feedforward state.
-    # Filter pitch before applying bidirectional grade feedforward.
-    self.pitch = FirstOrderFilter(0.0, 0.5, DT_CTRL)
     self.gasfactor = 1.0            # residual trim on top of the speed-scheduled baseline
     self.gasfactor_effective = 1.0  # base(vEgo) * trim; fork-only telemetry until actuator fields are restored
-    self.windfactor = 0.5
+    self.windfactor = 0.5            # diagnostic-only learner; it does not add to GAS_COMMAND
     # Preserve pre-saturation values so learning cannot wind farther into a rail.
     self.gasfactor_before_gasmax = self.gasfactor
     self.windfactor_before_brake = self.windfactor_before_gasmax = self.windfactor
@@ -143,9 +138,6 @@ class CarController(CarControllerBase):
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
-
-    if len(CC.orientationNED) == 3:
-      self.pitch.update(CC.orientationNED[1])
 
     if CC.longActive:
       accel = actuators.accel
@@ -235,11 +227,11 @@ class CarController(CarControllerBase):
 
             min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
 
-            # Drag and filtered grade feed the opaque gas command only. ACCEL_COMMAND and the
-            # gas/brake split use the unmodified controller request.
+            # Keep the gas wire tied to the controller request.  The logged wind/grade terms are
+            # not independently identified from gasfactor, so they remain diagnostic only in this
+            # arm rather than adding unverified force to GAS_COMMAND.
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
-            hill_brake = math.sin(self.pitch.x) * ACCELERATION_DUE_TO_GRAVITY
-            gas_pedal_force = accel + wind_brake_ms2 * self.windfactor + hill_brake
+            gas_pedal_force = accel
 
             # Honda's binary brake bit is too abrupt for small road-speed corrections. Leave a
             # neutral coast band there, while non-positive low-speed requests retain stop authority.
