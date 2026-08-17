@@ -49,6 +49,10 @@ class CarControllerParams:
     self.STEER_LOOKUP_BP = [v * -1 for v in CP.lateralParams.torqueBP][1:][::-1] + list(CP.lateralParams.torqueBP)
     self.STEER_LOOKUP_V = [v * -1 for v in CP.lateralParams.torqueV][1:][::-1] + list(CP.lateralParams.torqueV)
 
+    # Keep the Odyssey gas ceiling instance-scoped to avoid cross-car mutation.
+    if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      self.BOSCH_GAS_LOOKUP_V = [0, 2000]
+
 
 class HondaSafetyFlags(IntFlag):
   ALT_BRAKE = 1
