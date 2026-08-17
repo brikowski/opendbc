@@ -16,6 +16,9 @@ GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]   # m/s
 GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
+# Keep a fresh road-speed gas entry out of Honda's opaque gas domain until the request is material;
+# an already-active gas command still follows the upstream -0.20 release split.
+ODYSSEY_ROAD_GAS_REENTRY = 0.02
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.50
@@ -29,7 +32,8 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   gas_selected = accel_array > 0.0
   road_speed = speed_array >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO
   gas_selected = np.where(road_speed,
-                          gas_selected | (bool(previous_gas) & (accel_array > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])),
+                          (accel_array > ODYSSEY_ROAD_GAS_REENTRY) |
+                          (bool(previous_gas) & (accel_array > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])),
                           gas_selected)
   brake_selected = np.where(speed_array < ODYSSEY_LOW_SPEED_DOMAIN_VEGO,
                             accel_array <= 0.0,
