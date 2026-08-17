@@ -2,6 +2,7 @@ import numpy as np
 
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
+from opendbc.car.common.pid import PIDController
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HondaFlags, CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
@@ -16,6 +17,7 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+ODYSSEY_LOW_SPEED_BRAKE_PID_KI = 0.5
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
@@ -139,6 +141,12 @@ class CarController(CarControllerBase):
     self.odyssey_brake_selected = False
     self.odyssey_gas_selected = False
 
+    # Honda's Bosch loop can leave a small negative crawl request unmet while a stopped lead is
+    # ahead. Keep this one-sided correction below 3 m/s so normal braking remains a raw planner
+    # command and a positive or inactive request cannot inherit stale braking.
+    self.odyssey_brake_pid = PIDController(k_p=0.0, k_i=ODYSSEY_LOW_SPEED_BRAKE_PID_KI,
+                                           pos_limit=0.0, neg_limit=-2.0, rate=50)
+
     # Odyssey Bosch gas calibration state. Windfactor remains diagnostic-only in this arm.
     self.gasfactor = 1.0
     self.gasfactor_effective = 1.0
@@ -158,6 +166,7 @@ class CarController(CarControllerBase):
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
+      self.odyssey_brake_pid.reset()
       self.odyssey_brake_selected = False
       self.odyssey_gas_selected = False
 
@@ -250,7 +259,15 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_gas_selected)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
-            self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+            # The low-speed domain keeps every negative request on the brake side, including
+            # requests above the road-speed gas lookup threshold.
+            if brake_selected and 1e-3 < CS.out.vEgo < 3.0:
+              brake_addon = self.odyssey_brake_pid.update(error=accel - CS.out.aEgo, speed=CS.out.vEgo)
+              target_accel = min(accel, accel + brake_addon)
+            else:
+              self.odyssey_brake_pid.reset()
+              target_accel = accel
+            self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             base_gasfactor = float(np.interp(CS.out.vEgo, GAS_FACTOR_SPEED_BP, GAS_FACTOR_SPEED_V))
             if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
