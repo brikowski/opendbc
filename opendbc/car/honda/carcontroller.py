@@ -16,7 +16,9 @@ GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]   # m/s
 GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
-ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+# Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
+# immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
+ODYSSEY_ROAD_BRAKE_ENTRY = -0.50
 ODYSSEY_LOW_SPEED_BRAKE_PID_KI = 0.5
 
 
