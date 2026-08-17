@@ -16,7 +16,6 @@ GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
-ODYSSEY_ROAD_GAS_RELEASE = -0.02
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
@@ -26,7 +25,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   gas_selected = accel_array > 0.0
   road_speed = speed_array >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO
   gas_selected = np.where(road_speed,
-                          gas_selected | (bool(previous_gas) & (accel_array > ODYSSEY_ROAD_GAS_RELEASE)),
+                          gas_selected | (bool(previous_gas) & (accel_array > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])),
                           gas_selected)
   brake_selected = np.where(speed_array < ODYSSEY_LOW_SPEED_DOMAIN_VEGO,
                             accel_array <= 0.0,
@@ -250,9 +249,9 @@ class CarController(CarControllerBase):
             wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
             gas_pedal_force = accel
 
-            # Honda's binary domains are too abrupt for small road-speed corrections. Keep a narrow
-            # gas-release band to avoid live/inactive pulsing, while non-positive low-speed requests
-            # retain stop authority and the wider road-speed coast band remains unchanged.
+            # Keep an active road-speed gas command down to Honda's stock split so small corrections
+            # do not pulse the binary gas domain. After a true coast, require a positive request to
+            # re-enter gas; non-positive low-speed requests retain stop authority.
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
                                                                     self.odyssey_gas_selected)
