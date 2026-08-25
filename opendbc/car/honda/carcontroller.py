@@ -2,7 +2,6 @@ import numpy as np
 
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
-from opendbc.car.common.pid import PIDController
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HondaFlags, CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
@@ -22,7 +21,6 @@ ODYSSEY_ROAD_GAS_REENTRY = 0.02
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.50
-ODYSSEY_LOW_SPEED_BRAKE_PID_KI = 0.5
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
@@ -147,18 +145,10 @@ class CarController(CarControllerBase):
     self.odyssey_brake_selected = False
     self.odyssey_gas_selected = False
 
-    # Honda's Bosch loop can leave a small negative crawl request unmet while a stopped lead is
-    # ahead. Keep this one-sided correction below 3 m/s so normal braking remains a raw planner
-    # command and a positive or inactive request cannot inherit stale braking.
-    self.odyssey_brake_pid = PIDController(k_p=0.0, k_i=ODYSSEY_LOW_SPEED_BRAKE_PID_KI,
-                                           pos_limit=0.0, neg_limit=-2.0, rate=50)
-
-    # Odyssey Bosch gas calibration state. Windfactor remains diagnostic-only in this arm.
+    # Odyssey Bosch gas calibration state.
     self.gasfactor = 1.0
     self.gasfactor_effective = 1.0
-    self.windfactor = 0.5
     self.gasfactor_before_gasmax = self.gasfactor
-    self.windfactor_before_brake = self.windfactor_before_gasmax = self.windfactor
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -172,7 +162,6 @@ class CarController(CarControllerBase):
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
-      self.odyssey_brake_pid.reset()
       self.odyssey_brake_selected = False
       self.odyssey_gas_selected = False
 
@@ -255,9 +244,7 @@ class CarController(CarControllerBase):
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
 
-            # The wind/grade terms remain diagnostic-only: they are not independently identified
-            # from gasfactor and must not add unverified force to GAS_COMMAND.
-            wind_brake_ms2 = np.interp(CS.out.vEgo, [0.0, 13.4, 22.4, 31.3, 40.2], [0.000, 0.049, 0.136, 0.267, 0.441])
+            # Unidentified wind/grade terms do not add force to GAS_COMMAND.
             gas_pedal_force = accel
 
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
@@ -265,15 +252,9 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_gas_selected)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
-            # The low-speed domain keeps every negative request on the brake side, including
-            # requests above the road-speed gas lookup threshold.
-            if brake_selected and 1e-3 < CS.out.vEgo < 3.0:
-              brake_addon = self.odyssey_brake_pid.update(error=accel - CS.out.aEgo, speed=CS.out.vEgo)
-              target_accel = min(accel, accel + brake_addon)
-            else:
-              self.odyssey_brake_pid.reset()
-              target_accel = accel
-            self.accel = float(np.clip(target_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+            # The low-speed domain keeps every non-positive request on the brake side without
+            # reshaping the controller command.
+            self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
             base_gasfactor = float(np.interp(CS.out.vEgo, GAS_FACTOR_SPEED_BP, GAS_FACTOR_SPEED_V))
             if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
@@ -281,20 +262,10 @@ class CarController(CarControllerBase):
               if gas_selected and gas_pedal_force > 0.0:
                 learn_divisor = np.interp(CS.out.vEgo, [0., 15., 25.], [150, 200, 400])
                 self.gasfactor = np.clip(self.gasfactor + gas_error / learn_divisor * (gas_pedal_force - min_gas), 0.01, 3.0)
-              if (not CS.out.brakePressed) and (CS.out.vEgo > 0.0):
-                wind_learn_divisor = 500
-                wind_adjust = 1 + wind_brake_ms2 / wind_learn_divisor
-                self.windfactor = np.clip(self.windfactor * (wind_adjust if (gas_error > 0) else 1.0 / wind_adjust), 0.1, 3.0)
-              if brake_selected:
-                self.windfactor = max(self.windfactor, self.windfactor_before_brake)
-              else:
-                self.windfactor_before_brake = self.windfactor
               if gas_pedal_force >= self.params.BOSCH_ACCEL_MAX:
                 self.gasfactor = min(self.gasfactor, self.gasfactor_before_gasmax)
-                self.windfactor = min(self.windfactor, self.windfactor_before_gasmax)
               else:
                 self.gasfactor_before_gasmax = self.gasfactor
-                self.windfactor_before_gasmax = self.windfactor
 
             self.gasfactor_effective = base_gasfactor * self.gasfactor
             requested_gas = float(np.interp((gas_pedal_force - min_gas) * self.gasfactor_effective + min_gas,
