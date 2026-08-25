@@ -16,7 +16,7 @@ ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 ODYSSEY_ROAD_GAS_REENTRY = 0.02
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
-ODYSSEY_ROAD_BRAKE_ENTRY = -0.50
+ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
