@@ -10,6 +10,10 @@ Ecu = structs.CarParams.Ecu
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 GearShifter = structs.CarState.GearShifter
 
+# Odyssey powertrain calibration; keep the seed table with the per-car parameters.
+ODYSSEY_GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]  # m/s
+ODYSSEY_GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
+
 
 class CarControllerParams:
   # Allow small margin below -3.5 m/s^2 from ISO 15622:2018 since we
@@ -51,6 +55,8 @@ class CarControllerParams:
 
     # Keep the Odyssey gas ceiling instance-scoped to avoid cross-car mutation.
     if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      self.GAS_FACTOR_SPEED_BP = list(ODYSSEY_GAS_FACTOR_SPEED_BP)
+      self.GAS_FACTOR_SPEED_V = list(ODYSSEY_GAS_FACTOR_SPEED_V)
       self.BOSCH_GAS_LOOKUP_V = [0, 2000]
 
 

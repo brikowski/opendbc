@@ -10,10 +10,6 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
-# Odyssey gas scale baseline; gasfactor learns a per-drive residual around it.
-GAS_FACTOR_SPEED_BP = [0.0, 8.0, 15.0, 22.0]   # m/s
-GAS_FACTOR_SPEED_V = [0.72, 0.54, 0.56, 0.60]
-
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 # Keep a fresh road-speed gas entry out of Honda's opaque gas domain until the request is material;
 # an already-active gas command still follows the upstream -0.20 release split.
@@ -256,7 +252,8 @@ class CarController(CarControllerBase):
             # reshaping the controller command.
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
-            base_gasfactor = float(np.interp(CS.out.vEgo, GAS_FACTOR_SPEED_BP, GAS_FACTOR_SPEED_V))
+            base_gasfactor = float(np.interp(CS.out.vEgo, self.params.GAS_FACTOR_SPEED_BP,
+                                             self.params.GAS_FACTOR_SPEED_V))
             if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
               gas_error = self.accel - CS.out.aEgo
               if gas_selected and gas_pedal_force > 0.0:
