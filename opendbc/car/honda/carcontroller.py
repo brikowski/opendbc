@@ -138,11 +138,6 @@ class CarController(CarControllerBase):
     self.odyssey_brake_selected = False
     self.odyssey_gas_selected = False
 
-    # Odyssey Bosch gas calibration state.
-    self.gasfactor = 1.0
-    self.gasfactor_effective = 1.0
-    self.gasfactor_before_gasmax = self.gasfactor
-
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
@@ -249,20 +244,10 @@ class CarController(CarControllerBase):
             # reshaping the controller command.
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
-            base_gasfactor = float(np.interp(CS.out.vEgo, self.params.GAS_FACTOR_SPEED_BP,
-                                             self.params.GAS_FACTOR_SPEED_V))
-            if (actuators.longControlState == LongCtrlState.pid) and (not CS.out.gasPressed):
-              gas_error = self.accel - CS.out.aEgo
-              if gas_selected and gas_pedal_force > 0.0:
-                learn_divisor = np.interp(CS.out.vEgo, [0., 15., 25.], [150, 200, 400])
-                self.gasfactor = np.clip(self.gasfactor + gas_error / learn_divisor * (gas_pedal_force - min_gas), 0.01, 3.0)
-              if gas_pedal_force >= self.params.BOSCH_ACCEL_MAX:
-                self.gasfactor = min(self.gasfactor, self.gasfactor_before_gasmax)
-              else:
-                self.gasfactor_before_gasmax = self.gasfactor
-
-            self.gasfactor_effective = base_gasfactor * self.gasfactor
-            requested_gas = float(np.interp((gas_pedal_force - min_gas) * self.gasfactor_effective + min_gas,
+            # Keep the Odyssey calibration deterministic until residual adaptation has an isolated road benefit.
+            gasfactor = float(np.interp(CS.out.vEgo, self.params.GAS_FACTOR_SPEED_BP,
+                                        self.params.GAS_FACTOR_SPEED_V))
+            requested_gas = float(np.interp((gas_pedal_force - min_gas) * gasfactor + min_gas,
                                              self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
             self.gas = requested_gas if gas_selected else 0.0
             gas_domain = gas_selected
