@@ -230,11 +230,6 @@ class CarController(CarControllerBase):
 
         if self.CP.flags & HondaFlags.BOSCH:
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-            min_gas = self.params.BOSCH_GAS_LOOKUP_BP[0]
-
-            # Unidentified wind/grade terms do not add force to GAS_COMMAND.
-            gas_pedal_force = accel
-
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
                                                                     self.odyssey_gas_selected)
@@ -244,11 +239,8 @@ class CarController(CarControllerBase):
             # reshaping the controller command.
             self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
 
-            # Keep the Odyssey calibration deterministic until residual adaptation has an isolated road benefit.
-            gasfactor = float(np.interp(CS.out.vEgo, self.params.GAS_FACTOR_SPEED_BP,
-                                        self.params.GAS_FACTOR_SPEED_V))
-            requested_gas = float(np.interp((gas_pedal_force - min_gas) * gasfactor + min_gas,
-                                             self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            requested_gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP,
+                                             self.params.BOSCH_GAS_LOOKUP_V))
             self.gas = requested_gas if gas_selected else 0.0
             gas_domain = gas_selected
             brake_domain = brake_selected
