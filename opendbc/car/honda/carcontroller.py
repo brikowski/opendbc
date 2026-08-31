@@ -18,24 +18,15 @@ ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
   """Keep low-speed stop authority and separate road-speed coast from friction braking."""
-  accel_array = np.asarray(accel)
-  speed_array = np.asarray(speed)
-  gas_selected = accel_array > 0.0
-  road_speed = speed_array >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO
-  gas_selected = np.where(road_speed,
-                          gas_selected |
-                          (bool(previous_gas) & (accel_array > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])),
-                          gas_selected)
-  brake_selected = np.where(speed_array < ODYSSEY_LOW_SPEED_DOMAIN_VEGO,
-                            accel_array <= 0.0,
-                            (accel_array < ODYSSEY_ROAD_BRAKE_ENTRY) |
-                            (bool(previous_brake) & (accel_array < 0.0)))
+  gas_selected = accel > 0.0
+  if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
+    gas_selected |= previous_gas and accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0)
+  else:
+    brake_selected = accel <= 0.0
   # A positive request must release the brake domain immediately so the two commands remain
   # mutually exclusive, matching the stateful brake-permit behavior used by other OEM ports.
-  brake_selected = np.where(gas_selected, False, brake_selected)
-  if np.isscalar(accel) and np.isscalar(speed):
-    return bool(gas_selected), bool(brake_selected)
-  return gas_selected, brake_selected
+  return gas_selected, brake_selected and not gas_selected
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -229,6 +220,10 @@ class CarController(CarControllerBase):
         stopping = actuators.longControlState == LongCtrlState.stopping
 
         if self.CP.flags & HondaFlags.BOSCH:
+          self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+          self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+          gas_domain = None
+          brake_domain = None
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
@@ -237,18 +232,9 @@ class CarController(CarControllerBase):
             self.odyssey_gas_selected = gas_selected
             # The low-speed domain keeps every non-positive request on the brake side without
             # reshaping the controller command.
-            self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
-
-            requested_gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP,
-                                             self.params.BOSCH_GAS_LOOKUP_V))
-            self.gas = requested_gas if gas_selected else 0.0
+            self.gas = self.gas if gas_selected else 0.0
             gas_domain = gas_selected
             brake_domain = brake_selected
-          else:
-            self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
-            self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
-            gas_domain = None
-            brake_domain = None
 
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,

@@ -10,6 +10,7 @@ Ecu = structs.CarParams.Ecu
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 GearShifter = structs.CarState.GearShifter
 
+
 class CarControllerParams:
   # Allow small margin below -3.5 m/s^2 from ISO 15622:2018 since we
   # perform the closed loop control, and might need some
@@ -47,10 +48,6 @@ class CarControllerParams:
     assert CP.lateralParams.torqueV[0] == 0
     self.STEER_LOOKUP_BP = [v * -1 for v in CP.lateralParams.torqueBP][1:][::-1] + list(CP.lateralParams.torqueBP)
     self.STEER_LOOKUP_V = [v * -1 for v in CP.lateralParams.torqueV][1:][::-1] + list(CP.lateralParams.torqueV)
-
-    # Keep upstream's Odyssey gas ceiling instance-scoped to avoid cross-car mutation.
-    if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-      self.BOSCH_GAS_LOOKUP_V = [0, 2000]
 
 
 class HondaSafetyFlags(IntFlag):
