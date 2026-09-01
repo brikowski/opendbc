@@ -217,7 +217,6 @@ class CarController(CarControllerBase):
       # Send gas and brake commands.
       if self.frame % 2 == 0:
         ts = self.frame * DT_CTRL
-        stopping = actuators.longControlState == LongCtrlState.stopping
 
         if self.CP.flags & HondaFlags.BOSCH:
           self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
@@ -236,6 +235,7 @@ class CarController(CarControllerBase):
             gas_domain = gas_selected
             brake_domain = brake_selected
 
+          stopping = actuators.longControlState == LongCtrlState.stopping
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
                                                         self.stopping_counter, self.CP, gas_domain, brake_domain))
