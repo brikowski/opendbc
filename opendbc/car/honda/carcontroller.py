@@ -12,7 +12,7 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
-# immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
+# immediate friction-brake authority. Domain selection remains based on the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
 ODYSSEY_BRAKE_ONSET_JERK_MAX = 3.0  # m/s^3: downward road-speed friction-brake command limit
 ODYSSEY_BRAKE_ONSET_FLOOR = -1.5     # m/s^2: panic/firm braking bypass
