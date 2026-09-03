@@ -14,7 +14,7 @@ ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
-ODYSSEY_BRAKE_ONSET_JERK_MAX = 3.0  # m/s^3: rate limit on initial road-speed friction-brake entry
+ODYSSEY_BRAKE_ONSET_JERK_MAX = 3.0  # m/s^3: downward road-speed friction-brake command limit
 ODYSSEY_BRAKE_ONSET_FLOOR = -1.5     # m/s^2: panic/firm braking bypass
 
 
@@ -239,7 +239,7 @@ class CarController(CarControllerBase):
             gas_domain = gas_selected
             brake_domain = brake_selected
 
-            # Rate limit initial road-speed brake onset to prevent hydraulic transient overshoot.
+            # Rate limit moderate downward road-speed brake steps to reduce hydraulic transients.
             # Panic braking (< -1.5 m/s^2) and brake release (easing decel) remain instantaneous.
             if CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
               if brake_selected:
