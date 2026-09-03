@@ -14,6 +14,8 @@ ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority while ACCEL_COMMAND remains the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+ODYSSEY_BRAKE_ONSET_JERK_MAX = 3.0  # m/s^3: rate limit on initial road-speed friction-brake entry
+ODYSSEY_BRAKE_ONSET_FLOOR = -1.5     # m/s^2: panic/firm braking bypass
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
@@ -128,6 +130,7 @@ class CarController(CarControllerBase):
     self.last_torque = 0.0
     self.odyssey_brake_selected = False
     self.odyssey_gas_selected = False
+    self.odyssey_accel_last = 0.0
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -143,6 +146,7 @@ class CarController(CarControllerBase):
       gas, brake = 0.0, 0.0
       self.odyssey_brake_selected = False
       self.odyssey_gas_selected = False
+      self.odyssey_accel_last = 0.0
 
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
@@ -234,6 +238,20 @@ class CarController(CarControllerBase):
             self.gas = self.gas if gas_selected else 0.0
             gas_domain = gas_selected
             brake_domain = brake_selected
+
+            # Rate limit initial road-speed brake onset to prevent hydraulic transient overshoot.
+            # Panic braking (< -1.5 m/s^2) and brake release (easing decel) remain instantaneous.
+            if CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
+              if brake_selected:
+                accel_last = min(0.0, self.odyssey_accel_last)
+                if self.accel < accel_last and self.accel >= ODYSSEY_BRAKE_ONSET_FLOOR:
+                  max_decel_step = ODYSSEY_BRAKE_ONSET_JERK_MAX * (2 * DT_CTRL)
+                  self.accel = max(self.accel, accel_last - max_decel_step)
+              else:
+                self.odyssey_accel_last = 0.0
+              self.odyssey_accel_last = self.accel
+            else:
+              self.odyssey_accel_last = self.accel
 
           stopping = actuators.longControlState == LongCtrlState.stopping
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
