@@ -1,8 +1,7 @@
-import math
 import numpy as np
 
 from opendbc.can import CANPacker
-from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs, ACCELERATION_DUE_TO_GRAVITY
+from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HondaFlags, CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
@@ -15,10 +14,6 @@ ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority. Domain selection remains based on the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
-ODYSSEY_STOP_CREEP_VEGO = 2.0
-ODYSSEY_STOP_CREEP_FLOOR = -0.35
-ODYSSEY_BRAKE_GAIN_SCALE = 0.85
-ODYSSEY_MAX_PITCH_FEEDFORWARD = 0.50
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
@@ -234,23 +229,9 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_gas_selected)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
-
-            # 1. Pitch / grade feedforward on positive gas for climbs
-            if gas_selected:
-              pitch = CC.orientationNED[1] if len(CC.orientationNED) > 1 else 0.0
-              pitch_comp = float(np.clip(math.sin(max(pitch, 0.0)) * ACCELERATION_DUE_TO_GRAVITY, 0.0, ODYSSEY_MAX_PITCH_FEEDFORWARD))
-              self.gas = float(np.interp(accel + pitch_comp, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
-            else:
-              self.gas = 0.0
-
-            # 2. Road-speed moderate brake scale (counteracts Bosch deceleration amplification)
-            if CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and brake_selected and self.accel > -1.5:
-              self.accel = float(self.accel * ODYSSEY_BRAKE_GAIN_SCALE)
-
-            # 3. Low-speed stop creep authority floor (prevents rolling through stops below 2 m/s)
-            if CS.out.vEgo < ODYSSEY_STOP_CREEP_VEGO and brake_selected:
-              self.accel = float(min(self.accel, ODYSSEY_STOP_CREEP_FLOOR))
-
+            # The low-speed domain keeps every non-positive request on the brake side without
+            # reshaping the controller command.
+            self.gas = self.gas if gas_selected else 0.0
             gas_domain = gas_selected
             brake_domain = brake_selected
 
