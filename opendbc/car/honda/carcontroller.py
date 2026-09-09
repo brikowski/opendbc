@@ -10,6 +10,25 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
+ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
+# Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
+# immediate friction-brake authority. Domain selection remains based on the raw controller request.
+ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+
+
+def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
+  """Keep low-speed stop authority and separate road-speed coast from friction braking."""
+  gas_selected = accel > 0.0
+  if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
+    gas_selected |= previous_gas and accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0)
+  else:
+    brake_selected = accel <= 0.0
+  # A positive request must release the brake domain immediately so the two commands remain
+  # mutually exclusive, matching the stateful brake-permit behavior used by other OEM ports.
+  return gas_selected, brake_selected and not gas_selected
+
+
 def compute_gb_honda_bosch(accel, speed):
   # TODO returns 0s, is unused
   return 0.0, 0.0
@@ -107,6 +126,8 @@ class CarController(CarControllerBase):
     self.gas = 0.0
     self.brake = 0.0
     self.last_torque = 0.0
+    self.odyssey_brake_selected = False
+    self.odyssey_gas_selected = False
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -120,6 +141,8 @@ class CarController(CarControllerBase):
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
+      self.odyssey_brake_selected = False
+      self.odyssey_gas_selected = False
 
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
@@ -198,11 +221,24 @@ class CarController(CarControllerBase):
         if self.CP.flags & HondaFlags.BOSCH:
           self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
-
           stopping = actuators.longControlState == LongCtrlState.stopping
+          gas_domain = None
+          brake_domain = None
+          if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+            gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
+                                                                    self.odyssey_brake_selected,
+                                                                    self.odyssey_gas_selected)
+            self.odyssey_brake_selected = brake_selected
+            self.odyssey_gas_selected = gas_selected
+            # The low-speed domain keeps every non-positive request on the brake side without
+            # reshaping the controller command.
+            self.gas = self.gas if gas_selected else 0.0
+            gas_domain = gas_selected
+            brake_domain = brake_selected
+
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                                        self.stopping_counter, self.CP))
+                                                        self.stopping_counter, self.CP, gas_domain, brake_domain))
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
