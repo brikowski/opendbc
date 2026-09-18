@@ -11,6 +11,9 @@ LongCtrlState = structs.CarControl.Actuators.LongControlState
 
 
 ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
+# Include the float32 representation of a nominal -0.10 m/s2 carControl request.
+ODYSSEY_GAS_BRIDGE_ENTRY = -0.101
+ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority. Domain selection remains based on the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
@@ -20,6 +23,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   """Keep low-speed stop authority and separate road-speed coast from friction braking."""
   gas_selected = accel > 0.0
   if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
+    gas_selected |= not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0
     gas_selected |= previous_gas and accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0)
   else:
@@ -27,6 +31,13 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   # A positive request must release the brake domain immediately so the two commands remain
   # mutually exclusive, matching the stateful brake-permit behavior used by other OEM ports.
   return gas_selected, brake_selected and not gas_selected
+
+
+def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_active):
+  """Pre-activate the gas domain with the stock-supported negative transition command."""
+  bridge_active = gas_selected and accel < 0.0 and (bridge_active or not previous_gas)
+  gas = ODYSSEY_GAS_BRIDGE_COMMAND if bridge_active else mapped_gas
+  return (gas if gas_selected else 0.0), bridge_active
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -128,6 +139,7 @@ class CarController(CarControllerBase):
     self.last_torque = 0.0
     self.odyssey_brake_selected = False
     self.odyssey_gas_selected = False
+    self.odyssey_gas_bridge_active = False
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -143,6 +155,7 @@ class CarController(CarControllerBase):
       gas, brake = 0.0, 0.0
       self.odyssey_brake_selected = False
       self.odyssey_gas_selected = False
+      self.odyssey_gas_bridge_active = False
 
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
@@ -225,14 +238,16 @@ class CarController(CarControllerBase):
           gas_domain = None
           brake_domain = None
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+            previous_gas = self.odyssey_gas_selected
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
-                                                                    self.odyssey_gas_selected)
+                                                                    previous_gas)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             # The low-speed domain keeps every non-positive request on the brake side without
             # reshaping the controller command.
-            self.gas = self.gas if gas_selected else 0.0
+            self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
+                                                                            previous_gas, self.odyssey_gas_bridge_active)
             gas_domain = gas_selected
             brake_domain = brake_selected
 
