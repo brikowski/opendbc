@@ -19,12 +19,14 @@ ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
 
 
-def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False):
+def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False):
   """Keep low-speed stop authority and separate road-speed coast from friction braking."""
   gas_selected = accel > 0.0
   if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
     gas_selected |= not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0
     gas_selected |= previous_gas and accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
+      gas_selected = False
     brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0)
   else:
     brake_selected = accel <= 0.0
@@ -241,7 +243,8 @@ class CarController(CarControllerBase):
             previous_gas = self.odyssey_gas_selected
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
-                                                                    previous_gas)
+                                                                    previous_gas,
+                                                                    self.odyssey_gas_bridge_active)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             # The low-speed domain keeps every non-positive request on the brake side without

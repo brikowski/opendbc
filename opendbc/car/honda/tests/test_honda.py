@@ -16,6 +16,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
   def test_negative_gas_bridge_only_enters_from_road_speed_coast(self):
     self.assertEqual(odyssey_command_domains(-0.10, 20.0), (True, False))
     self.assertEqual(odyssey_command_domains(-0.11, 20.0), (False, False))
+    self.assertEqual(odyssey_command_domains(-0.11, 20.0, previous_gas=True, bridge_active=True), (False, False))
+    self.assertEqual(odyssey_command_domains(-0.11, 20.0, previous_gas=True), (True, False))
     self.assertEqual(odyssey_command_domains(-0.05, 20.0, previous_brake=True), (False, True))
     self.assertEqual(odyssey_command_domains(-0.05, 4.0), (False, True))
 
