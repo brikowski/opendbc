@@ -21,6 +21,7 @@ ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
 # without passing short pose transients directly into Honda's opaque gas command.
 ODYSSEY_GRADE_FILTER_TAU = 0.5
 ODYSSEY_UPHILL_ACCEL_MAX = 1.0
+ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority. Domain selection remains based on the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
@@ -55,7 +56,9 @@ def odyssey_uphill_gas_accel(accel, pitch, filtered_pitch=None):
     return accel
   grade_pitch = pitch if filtered_pitch is None else filtered_pitch
   grade_accel = np.clip(math.sin(grade_pitch) * ACCELERATION_DUE_TO_GRAVITY, 0.0, ODYSSEY_UPHILL_ACCEL_MAX)
-  return accel + grade_accel
+  # Once longcontrol has already raised the raw request, do not stack the full grade estimate on
+  # top and provoke a second acceleration step when the transmission downshifts. Never clip raw.
+  return max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
 
 
 def compute_gb_honda_bosch(accel, speed):

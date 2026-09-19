@@ -2,7 +2,7 @@ import math
 import unittest
 
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
-from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_UPHILL_ACCEL_MAX,
+from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_UPHILL_GAS_ACCEL_MAX,
                                              odyssey_command_domains, odyssey_gas_command,
                                              odyssey_uphill_gas_accel)
 from opendbc.car.honda.values import CAR, HondaFlags
@@ -26,7 +26,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_uphill_gas_accel(0.0, pitch), 0.0)
     self.assertEqual(odyssey_uphill_gas_accel(-0.1, pitch), -0.1)
     self.assertEqual(odyssey_uphill_gas_accel(accel, -pitch, pitch), accel)
-    self.assertEqual(odyssey_uphill_gas_accel(accel, math.pi / 2), accel + ODYSSEY_UPHILL_ACCEL_MAX)
+    self.assertEqual(odyssey_uphill_gas_accel(accel, math.pi / 2), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+    self.assertEqual(odyssey_uphill_gas_accel(1.2, pitch), 1.2)
 
   def test_negative_gas_bridge_only_enters_from_road_speed_coast(self):
     self.assertEqual(odyssey_command_domains(-0.10, 20.0), (True, False))
