@@ -1,7 +1,10 @@
+import math
+
 import numpy as np
 
 from opendbc.can import CANPacker
-from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
+from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HondaFlags, CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
@@ -14,6 +17,10 @@ ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
 # Include the float32 representation of a nominal -0.10 m/s2 carControl request.
 ODYSSEY_GAS_BRIDGE_ENTRY = -0.101
 ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
+# Bound the uphill load correction independently from ACCEL_COMMAND. The filter follows road grade
+# without passing short pose transients directly into Honda's opaque gas command.
+ODYSSEY_GRADE_FILTER_TAU = 0.5
+ODYSSEY_UPHILL_ACCEL_MAX = 1.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority. Domain selection remains based on the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
@@ -40,6 +47,15 @@ def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_ac
   bridge_active = gas_selected and accel < 0.0 and (bridge_active or not previous_gas)
   gas = ODYSSEY_GAS_BRIDGE_COMMAND if bridge_active else mapped_gas
   return (gas if gas_selected else 0.0), bridge_active
+
+
+def odyssey_uphill_gas_accel(accel, pitch, filtered_pitch=None):
+  """Add only the uphill tractive load to Odyssey gas mapping, leaving accel and domains raw."""
+  if accel <= 0.0 or pitch <= 0.0:
+    return accel
+  grade_pitch = pitch if filtered_pitch is None else filtered_pitch
+  grade_accel = np.clip(math.sin(grade_pitch) * ACCELERATION_DUE_TO_GRAVITY, 0.0, ODYSSEY_UPHILL_ACCEL_MAX)
+  return accel + grade_accel
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -142,12 +158,17 @@ class CarController(CarControllerBase):
     self.odyssey_brake_selected = False
     self.odyssey_gas_selected = False
     self.odyssey_gas_bridge_active = False
+    self.odyssey_pitch = FirstOrderFilter(0.0, ODYSSEY_GRADE_FILTER_TAU, DT_CTRL)
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
+
+    odyssey_pitch_valid = self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR and len(CC.orientationNED) == 3
+    if odyssey_pitch_valid:
+      self.odyssey_pitch.update(CC.orientationNED[1])
 
     if CC.longActive:
       accel = actuators.accel
@@ -247,6 +268,10 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_gas_bridge_active)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
+            if (gas_selected and accel > 0.0 and odyssey_pitch_valid and actuators.longControlState == LongCtrlState.pid and
+                not CS.out.gasPressed):
+              gas_accel = odyssey_uphill_gas_accel(accel, CC.orientationNED[1], self.odyssey_pitch.x)
+              self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
             # The low-speed domain keeps every non-positive request on the brake side without
             # reshaping the controller command.
             self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
