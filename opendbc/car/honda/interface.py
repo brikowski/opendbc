@@ -188,6 +188,8 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.NIDEC_ALT.value
     if ret.openpilotLongitudinalControl and ret.flags & HondaFlags.BOSCH:
       ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.BOSCH_LONG.value
+      if candidate == CAR.HONDA_ODYSSEY_5G_MMR:
+        ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.ODYSSEY_LONG.value
     if ret.flags & HondaFlags.BOSCH_RADARLESS:
       ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.RADARLESS.value
     if ret.flags & HondaFlags.BOSCH_CANFD:
