@@ -1,7 +1,10 @@
+import math
 import unittest
 
-from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_UPHILL_GAS_ACCEL_MAX,
-                                             odyssey_command_domains, odyssey_gas_command, odyssey_uphill_gas_accel)
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
+from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN, ODYSSEY_GRADE_RAMP_ACCEL,
+                                             ODYSSEY_UPHILL_GAS_ACCEL_MAX, odyssey_command_domains, odyssey_gas_command,
+                                             odyssey_uphill_gas_accel)
 from opendbc.car.honda.values import CAR, HondaFlags
 
 
@@ -20,7 +23,9 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_uphill_gas_accel(0.3, 0.0), 0.3)
     self.assertEqual(odyssey_uphill_gas_accel(0.3, -pitch), 0.3)
     self.assertLess(odyssey_uphill_gas_accel(0.01, pitch) - 0.01, 0.002)
-    self.assertGreater(odyssey_uphill_gas_accel(ODYSSEY_GRADE_RAMP_ACCEL, pitch), ODYSSEY_GRADE_RAMP_ACCEL + 0.25)
+    expected = ODYSSEY_GRADE_RAMP_ACCEL + math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.6
+    self.assertEqual(ODYSSEY_GRADE_GAIN, 0.6)
+    self.assertAlmostEqual(odyssey_uphill_gas_accel(ODYSSEY_GRADE_RAMP_ACCEL, pitch), expected)
     self.assertEqual(odyssey_uphill_gas_accel(1.2, pitch), 1.2)
     self.assertLessEqual(odyssey_uphill_gas_accel(0.83, 0.072), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
 
