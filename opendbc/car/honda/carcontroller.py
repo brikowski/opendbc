@@ -19,7 +19,7 @@ ODYSSEY_GAS_BRIDGE_ENTRY = -0.101
 ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
 ODYSSEY_GRADE_FILTER_TAU = 0.5
 ODYSSEY_GRADE_RAMP_ACCEL = 0.30
-ODYSSEY_GRADE_GAIN = 0.6
+ODYSSEY_GRADE_GAIN = 0.7
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority. Domain selection remains based on the raw controller request.
