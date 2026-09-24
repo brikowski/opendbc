@@ -2,9 +2,9 @@ import math
 import unittest
 
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
-from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN, ODYSSEY_GRADE_RAMP_ACCEL,
-                                             ODYSSEY_UPHILL_GAS_ACCEL_MAX, odyssey_command_domains, odyssey_gas_command,
-                                             odyssey_uphill_gas_accel)
+from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
+                                             ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_UPHILL_GAS_ACCEL_MAX, odyssey_brake_accel,
+                                             odyssey_command_domains, odyssey_gas_command, odyssey_uphill_gas_accel)
 from opendbc.car.honda.values import CAR, HondaFlags
 
 
@@ -36,6 +36,16 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_command_domains(-0.11, 20.0, previous_gas=True), (True, False))
     self.assertEqual(odyssey_command_domains(-0.05, 20.0, previous_brake=True), (False, True))
     self.assertEqual(odyssey_command_domains(-0.05, 4.0), (False, True))
+
+  def test_brake_grade_translation_tracks_net_acceleration(self):
+    accel = -0.5
+    pitch = 0.03
+    grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
+    self.assertEqual(ODYSSEY_BRAKE_GRADE_GAIN, 0.3)
+    self.assertAlmostEqual(odyssey_brake_accel(accel, pitch), accel + grade)
+    self.assertAlmostEqual(odyssey_brake_accel(accel, -pitch), accel - grade)
+    self.assertEqual(odyssey_brake_accel(-0.1, 0.2), 0.0)
+    self.assertEqual(odyssey_brake_accel(0.1, pitch), 0.1)
 
   def test_negative_gas_bridge_preserves_existing_domain_lifecycle(self):
     gas, active = odyssey_gas_command(-0.10, 91.0, True, False, False)

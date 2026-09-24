@@ -21,6 +21,7 @@ ODYSSEY_GRADE_FILTER_TAU = 0.5
 ODYSSEY_GRADE_RAMP_ACCEL = 0.30
 ODYSSEY_GRADE_GAIN = 0.7
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
+ODYSSEY_BRAKE_GRADE_GAIN = 0.3
 # Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
 # immediate friction-brake authority. Domain selection remains based on the raw controller request.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
@@ -57,6 +58,14 @@ def odyssey_uphill_gas_accel(accel, pitch):
   grade_weight = x * x * (3.0 - 2.0 * x)
   grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_weight * ODYSSEY_GRADE_GAIN
   return max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
+
+
+def odyssey_brake_accel(accel, pitch):
+  """Translate the requested net deceleration into Honda's grade-relative brake command."""
+  if accel >= 0.0:
+    return accel
+  grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
+  return min(accel + grade_accel, 0.0)
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -271,6 +280,10 @@ class CarController(CarControllerBase):
                 actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
               gas_accel = odyssey_uphill_gas_accel(accel, self.odyssey_pitch.x)
               self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            if (brake_selected and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and odyssey_pitch_valid and
+                actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
+              brake_accel = odyssey_brake_accel(accel, self.odyssey_pitch.x)
+              self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
             # The low-speed domain keeps every non-positive request on the brake side without
             # reshaping the controller command.
             self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
