@@ -23,6 +23,7 @@ ODYSSEY_GRADE_GAIN = 0.6
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
 ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX = 0.10
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
+ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
 # Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
 # the raw request; bounded uphill gas demand may delay only an already-active gas release.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
@@ -81,6 +82,20 @@ def odyssey_brake_accel(accel, pitch):
     return accel
   grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
   return min(accel + grade_accel, 0.0)
+
+
+def odyssey_low_speed_gas_command(gas, accel, speed):
+  """Bound positive-gas feedforward where Odyssey acceleration exceeds the net request."""
+  if accel <= 0.0 or gas <= 0.0:
+    return gas
+
+  def smoothstep(value):
+    x = float(np.clip(value, 0.0, 1.0))
+    return x * x * (3.0 - 2.0 * x)
+
+  speed_weight = smoothstep((speed - 8.0) / 4.0) * smoothstep((24.0 - speed) / 4.0)
+  request_weight = smoothstep((accel - 0.4) / 0.4) * smoothstep((2.0 - accel) / 0.4)
+  return max(0.0, gas - ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS * speed_weight * request_weight)
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -298,6 +313,8 @@ class CarController(CarControllerBase):
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:
               self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
+              self.gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             if (brake_selected and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and odyssey_pitch_valid and
                 actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
               brake_accel = odyssey_brake_accel(accel, self.odyssey_pitch.x)

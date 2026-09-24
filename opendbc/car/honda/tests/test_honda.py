@@ -3,9 +3,11 @@ import unittest
 
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
 from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
-                                             ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX,
+                                             ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
+                                             ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX,
                                              ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_UPHILL_GAS_ACCEL_MAX, odyssey_brake_accel,
-                                             odyssey_command_domains, odyssey_gas_command, odyssey_uphill_gas_accel)
+                                             odyssey_command_domains, odyssey_gas_command, odyssey_low_speed_gas_command,
+                                             odyssey_uphill_gas_accel)
 from opendbc.car.honda.values import CAR, HondaFlags
 
 
@@ -17,6 +19,23 @@ class TestHondaFingerprint(unittest.TestCase):
 
 
 class TestOdysseyLongitudinal(unittest.TestCase):
+  def test_low_speed_positive_gas_trim_is_bounded_and_monotone(self):
+    def gas(accel):
+      return (accel + 0.2) / 2.2 * 2000.0
+    self.assertEqual(ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS, 200.0)
+    self.assertEqual(odyssey_low_speed_gas_command(gas(1.1), 1.1, 14.0), gas(1.1) - 200.0)
+    for speed in (0.0, 8.0, 24.0, 32.0):
+      self.assertEqual(odyssey_low_speed_gas_command(gas(1.1), 1.1, speed), gas(1.1))
+    for accel in (0.4, 2.0):
+      self.assertEqual(odyssey_low_speed_gas_command(gas(accel), accel, 14.0), gas(accel))
+    self.assertEqual(odyssey_low_speed_gas_command(-60.0, -0.1, 14.0), -60.0)
+    self.assertEqual(odyssey_low_speed_gas_command(0.0, 0.0, 14.0), 0.0)
+    values = [odyssey_low_speed_gas_command(gas(accel), accel, 14.0) for accel in (i * 0.01 for i in range(201))]
+    self.assertTrue(all(left <= right for left, right in zip(values, values[1:], strict=False)))
+    for speed in (8.0, 12.0, 20.0, 24.0):
+      self.assertLess(abs(odyssey_low_speed_gas_command(gas(1.1), 1.1, speed - 1e-4) -
+                          odyssey_low_speed_gas_command(gas(1.1), 1.1, speed + 1e-4)), 0.01)
+
   def test_uphill_gas_load_is_continuous_through_negative_transition_and_bounded_at_high_request(self):
     pitch = 0.03
     self.assertEqual(odyssey_uphill_gas_accel(0.0, pitch), 0.0)
