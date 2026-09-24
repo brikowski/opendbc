@@ -21,18 +21,21 @@ ODYSSEY_GRADE_FILTER_TAU = 0.5
 ODYSSEY_GRADE_RAMP_ACCEL = 0.30
 ODYSSEY_GRADE_GAIN = 0.7
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
+ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX = 0.10
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
-# Keep mild negative road-speed requests in Honda's neutral coast domain; stronger requests retain
-# immediate friction-brake authority. Domain selection remains based on the raw controller request.
+# Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
+# the raw request; bounded uphill gas demand may delay only an already-active gas release.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
 
 
-def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False):
+def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False,
+                            gas_accel=None):
   """Keep low-speed stop authority and separate road-speed coast from friction braking."""
+  gas_accel = accel if gas_accel is None else gas_accel
   gas_selected = accel > 0.0
   if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
     gas_selected |= not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0
-    gas_selected |= previous_gas and accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    gas_selected |= previous_gas and gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
       gas_selected = False
     brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0)
@@ -51,8 +54,20 @@ def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_ac
 
 
 def odyssey_uphill_gas_accel(accel, pitch):
-  """Ramp uphill gas assistance from zero at a zero request, without changing ACCEL_COMMAND."""
-  if accel <= 0.0 or pitch <= 0.0:
+  """Translate net acceleration to a bounded uphill gas demand without changing ACCEL_COMMAND."""
+  if pitch <= 0.0:
+    return accel
+  if ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0:
+    gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    if accel <= gas_split:
+      x = (accel - ODYSSEY_ROAD_BRAKE_ENTRY) / (gas_split - ODYSSEY_ROAD_BRAKE_ENTRY)
+    else:
+      x = accel / gas_split
+    grade_weight = x * x * (3.0 - 2.0 * x)
+    grade_accel = min(math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_GRADE_GAIN,
+                      ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX)
+    return accel + grade_accel * grade_weight
+  if accel <= 0.0:
     return accel
   x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
   grade_weight = x * x * (3.0 - 2.0 * x)
@@ -270,15 +285,18 @@ class CarController(CarControllerBase):
           brake_domain = None
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
+            gas_accel = accel
+            if (odyssey_pitch_valid and CC.orientationNED[1] > 0.0 and
+                actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
+              gas_accel = odyssey_uphill_gas_accel(accel, self.odyssey_pitch.x)
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
                                                                     previous_gas,
-                                                                    self.odyssey_gas_bridge_active)
+                                                                    self.odyssey_gas_bridge_active,
+                                                                    gas_accel)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
-            if (gas_selected and accel > 0.0 and odyssey_pitch_valid and CC.orientationNED[1] > 0.0 and
-                actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
-              gas_accel = odyssey_uphill_gas_accel(accel, self.odyssey_pitch.x)
+            if gas_selected and gas_accel != accel:
               self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
             if (brake_selected and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and odyssey_pitch_valid and
                 actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
