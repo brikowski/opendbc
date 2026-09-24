@@ -25,12 +25,14 @@ class TestOdysseyLongitudinal(unittest.TestCase):
                            -0.20 + ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX)
     self.assertEqual(odyssey_uphill_gas_accel(ODYSSEY_ROAD_BRAKE_ENTRY, pitch), ODYSSEY_ROAD_BRAKE_ENTRY)
     self.assertEqual(odyssey_uphill_gas_accel(0.3, 0.0), 0.3)
-    self.assertEqual(odyssey_uphill_gas_accel(0.3, -pitch), 0.3)
+    downhill_grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.6
+    self.assertAlmostEqual(odyssey_uphill_gas_accel(0.3, -pitch), 0.3 - downhill_grade)
     self.assertLess(odyssey_uphill_gas_accel(0.01, pitch) - 0.01, 0.002)
-    expected = ODYSSEY_GRADE_RAMP_ACCEL + math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.7
-    self.assertEqual(ODYSSEY_GRADE_GAIN, 0.7)
+    expected = ODYSSEY_GRADE_RAMP_ACCEL + math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.6
+    self.assertEqual(ODYSSEY_GRADE_GAIN, 0.6)
     self.assertAlmostEqual(odyssey_uphill_gas_accel(ODYSSEY_GRADE_RAMP_ACCEL, pitch), expected)
     self.assertEqual(odyssey_uphill_gas_accel(1.2, pitch), 1.2)
+    self.assertAlmostEqual(odyssey_uphill_gas_accel(1.2, -pitch), 1.2 - downhill_grade)
     self.assertLessEqual(odyssey_uphill_gas_accel(0.83, 0.072), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
 
   def test_negative_gas_bridge_only_enters_from_road_speed_coast(self):

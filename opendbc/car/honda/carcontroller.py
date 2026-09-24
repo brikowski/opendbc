@@ -19,7 +19,7 @@ ODYSSEY_GAS_BRIDGE_ENTRY = -0.101
 ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
 ODYSSEY_GRADE_FILTER_TAU = 0.5
 ODYSSEY_GRADE_RAMP_ACCEL = 0.30
-ODYSSEY_GRADE_GAIN = 0.7
+ODYSSEY_GRADE_GAIN = 0.6
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
 ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX = 0.10
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
@@ -54,10 +54,8 @@ def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_ac
 
 
 def odyssey_uphill_gas_accel(accel, pitch):
-  """Translate net acceleration to a bounded uphill gas demand without changing ACCEL_COMMAND."""
-  if pitch <= 0.0:
-    return accel
-  if ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0:
+  """Translate net acceleration to grade-relative gas demand without changing ACCEL_COMMAND."""
+  if pitch > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0:
     gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if accel <= gas_split:
       x = (accel - ODYSSEY_ROAD_BRAKE_ENTRY) / (gas_split - ODYSSEY_ROAD_BRAKE_ENTRY)
@@ -72,7 +70,9 @@ def odyssey_uphill_gas_accel(accel, pitch):
   x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
   grade_weight = x * x * (3.0 - 2.0 * x)
   grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_weight * ODYSSEY_GRADE_GAIN
-  return max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
+  if grade_accel >= 0.0:
+    return max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
+  return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade_accel)
 
 
 def odyssey_brake_accel(accel, pitch):
@@ -286,7 +286,7 @@ class CarController(CarControllerBase):
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
             gas_accel = accel
-            if (odyssey_pitch_valid and CC.orientationNED[1] > 0.0 and
+            if (odyssey_pitch_valid and CC.orientationNED[1] * self.odyssey_pitch.x > 0.0 and
                 actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
               gas_accel = odyssey_uphill_gas_accel(accel, self.odyssey_pitch.x)
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
