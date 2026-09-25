@@ -7,7 +7,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_G
                                              ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX,
                                              ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_UPHILL_GAS_ACCEL_MAX, odyssey_brake_accel,
                                              odyssey_command_domains, odyssey_gas_command, odyssey_low_speed_gas_command,
-                                             odyssey_uphill_gas_accel)
+                                             odyssey_steep_nearzero_grade_accel, odyssey_uphill_gas_accel)
 from opendbc.car.honda.values import CAR, HondaFlags
 
 
@@ -53,6 +53,24 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_uphill_gas_accel(1.2, pitch), 1.2)
     self.assertAlmostEqual(odyssey_uphill_gas_accel(1.2, -pitch), 1.2 - downhill_grade)
     self.assertLessEqual(odyssey_uphill_gas_accel(0.83, 0.072), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+
+  def test_steep_uphill_near_zero_gas_load_is_local_and_smooth(self):
+    pitch = 0.06
+    self.assertAlmostEqual(odyssey_steep_nearzero_grade_accel(0.0, pitch, 20.0), 0.15)
+    self.assertGreater(odyssey_steep_nearzero_grade_accel(-0.03, pitch, 20.0), 0.10)
+    self.assertAlmostEqual(odyssey_steep_nearzero_grade_accel(0.0, pitch, 4.0), 0.0)
+    self.assertGreater(odyssey_steep_nearzero_grade_accel(0.0, pitch, 6.5), 0.0)
+    self.assertAlmostEqual(odyssey_steep_nearzero_grade_accel(0.0, 0.03, 20.0), 0.0)
+    self.assertAlmostEqual(odyssey_steep_nearzero_grade_accel(0.0, -pitch, 20.0), 0.0)
+    for request in (-0.10, 0.20):
+      self.assertAlmostEqual(odyssey_steep_nearzero_grade_accel(request, pitch, 20.0), 0.0)
+    for p in (0.03, 0.045, 0.06, 0.09):
+      values = [odyssey_uphill_gas_accel(i * 0.001, p) +
+                odyssey_steep_nearzero_grade_accel(i * 0.001, p, 20.0) for i in range(-300, 301)]
+      self.assertTrue(all(left <= right + 1e-9 for left, right in zip(values, values[1:], strict=False)))
+      for threshold in (-0.10, -0.05, 0.0, 0.20):
+        self.assertLess(abs(odyssey_steep_nearzero_grade_accel(threshold - 1e-5, p, 20.0) -
+                            odyssey_steep_nearzero_grade_accel(threshold + 1e-5, p, 20.0)), 1e-3)
 
   def test_negative_gas_bridge_only_enters_from_road_speed_coast(self):
     self.assertEqual(odyssey_command_domains(-0.10, 20.0), (True, False))
