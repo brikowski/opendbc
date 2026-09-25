@@ -56,21 +56,31 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertAlmostEqual(odyssey_uphill_gas_accel(1.2, -pitch), 1.2 - downhill_grade)
     self.assertLessEqual(odyssey_uphill_gas_accel(0.83, 0.072), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
 
-  def test_uphill_gas_cap_fraction_tracks_limited_grade_only(self):
+  def test_uphill_gas_cap_feedback_weight_tracks_limited_grade_only(self):
     self.assertEqual(odyssey_uphill_gas_accel_with_cap(-0.1, 0.03)[1], 0.0)
     self.assertEqual(odyssey_uphill_gas_accel_with_cap(0.95, -0.03)[1], 0.0)
     self.assertEqual(odyssey_uphill_gas_accel_with_cap(0.3, 0.03)[1], 0.0)
     request, pitch = 0.95, 0.04
-    mapped, fraction = odyssey_uphill_gas_accel_with_cap(request, pitch)
+    mapped, weight = odyssey_uphill_gas_accel_with_cap(request, pitch)
     grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_GRADE_GAIN
+    load = min(grade / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+    load_weight = load * load * (3.0 - 2.0 * load)
     self.assertEqual(mapped, ODYSSEY_UPHILL_GAS_ACCEL_MAX)
-    self.assertAlmostEqual(fraction, (request + grade - mapped) / grade)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(1.2, pitch), (1.2, 1.0))
+    self.assertAlmostEqual(weight, (request + grade - mapped) / grade * load_weight)
+    high_mapped, high_weight = odyssey_uphill_gas_accel_with_cap(1.2, pitch)
+    self.assertEqual(high_mapped, 1.2)
+    self.assertAlmostEqual(high_weight, load_weight)
     threshold = ODYSSEY_UPHILL_GAS_ACCEL_MAX - grade
     self.assertLess(odyssey_uphill_gas_accel_with_cap(threshold + 1e-5, pitch)[1], 0.001)
     self.assertEqual(odyssey_uphill_gas_accel_with_cap(threshold - 1e-5, pitch)[1], 0.0)
 
-  def test_gas_response_cap_fraction_increases_only_bounded_feedback(self):
+  def test_uphill_gas_cap_feedback_fades_with_vanishing_grade(self):
+    high_request = 1.2
+    self.assertEqual(odyssey_uphill_gas_accel_with_cap(high_request, 0.0)[1], 0.0)
+    self.assertLess(odyssey_uphill_gas_accel_with_cap(high_request, 1e-5)[1], 1e-3)
+    self.assertGreater(odyssey_uphill_gas_accel_with_cap(high_request, 0.08)[1], 0.9)
+
+  def test_gas_response_cap_weight_increases_only_bounded_feedback(self):
     self.assertGreater(ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL)
     baseline, capped = OdysseyGasResponse(), OdysseyGasResponse()
     for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 20):

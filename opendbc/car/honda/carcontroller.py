@@ -61,7 +61,7 @@ def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_ac
 
 
 def odyssey_uphill_gas_accel_with_cap(accel, pitch):
-  """Return the grade-relative gas-map input and the fraction limited by its uphill cap."""
+  """Return the gas-map input and a smooth feedback weight for clipped uphill load."""
   if pitch > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0:
     gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if accel <= gas_split:
@@ -79,8 +79,12 @@ def odyssey_uphill_gas_accel_with_cap(accel, pitch):
   grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_weight * ODYSSEY_GRADE_GAIN
   if grade_accel >= 0.0:
     mapped = max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
-    cap_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0)) if grade_accel > 0.0 else 0.0
-    return mapped, cap_fraction
+    if grade_accel > 0.0:
+      limited_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0))
+      load = min(grade_accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+      load_weight = load * load * (3.0 - 2.0 * load)
+      return mapped, limited_fraction * load_weight
+    return mapped, 0.0
   return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade_accel), 0.0
 
 
@@ -129,8 +133,8 @@ class OdysseyGasResponse:
     self.gear = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
-  def update(self, request, aego, pitch, speed, gear, eligible, cap_fraction=0.0):
-    if not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, cap_fraction)):
+  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0):
+    if not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, cap_weight)):
       self.reset()
       return 0.0
 
@@ -145,7 +149,7 @@ class OdysseyGasResponse:
       delayed_request = self.requests[0]
       residual = self.error.update(delayed_request - aego)
       response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
-                                                          ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_fraction, 0.0, 1.0))
+                                                          ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
       target = float(np.clip(response_gain * residual,
                              -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
       if request < delayed_request - 0.08:
@@ -362,10 +366,10 @@ class CarController(CarControllerBase):
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
             gas_accel = accel
-            cap_fraction = 0.0
+            cap_weight = 0.0
             if (odyssey_pitch_valid and CC.orientationNED[1] * self.odyssey_pitch.x > 0.0 and
                 actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
-              gas_accel, cap_fraction = odyssey_uphill_gas_accel_with_cap(accel, self.odyssey_pitch.x)
+              gas_accel, cap_weight = odyssey_uphill_gas_accel_with_cap(accel, self.odyssey_pitch.x)
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
                                                                     previous_gas,
@@ -381,7 +385,7 @@ class CarController(CarControllerBase):
                                  not CS.out.gasPressed and not CS.out.brakePressed and
                                  CS.out.vEgo >= 8.0 and self.gas > 0.0)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
-                                                            CS.out.vEgo, CS.out.gearShifter, feedback_eligible, cap_fraction)
+                                                            CS.out.vEgo, CS.out.gearShifter, feedback_eligible, cap_weight)
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
             if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
