@@ -26,6 +26,7 @@ ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX = 0.10
 ODYSSEY_RESPONSE_DELAY_FRAMES = 25  # 0.5 s Bosch longitudinal delay at 50 Hz
 ODYSSEY_RESPONSE_MAX_COUNTS = 100.0
 ODYSSEY_RESPONSE_COUNTS_PER_ACCEL = 200.0
+ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
 ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
 ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
@@ -59,8 +60,8 @@ def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_ac
   return (gas if gas_selected else 0.0), bridge_active
 
 
-def odyssey_uphill_gas_accel(accel, pitch):
-  """Translate net acceleration to grade-relative gas demand without changing ACCEL_COMMAND."""
+def odyssey_uphill_gas_accel_with_cap(accel, pitch):
+  """Return the grade-relative gas-map input and the fraction limited by its uphill cap."""
   if pitch > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0:
     gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if accel <= gas_split:
@@ -70,15 +71,22 @@ def odyssey_uphill_gas_accel(accel, pitch):
     grade_weight = x * x * (3.0 - 2.0 * x)
     grade_accel = min(math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_GRADE_GAIN,
                       ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX)
-    return accel + grade_accel * grade_weight
+    return accel + grade_accel * grade_weight, 0.0
   if accel <= 0.0:
-    return accel
+    return accel, 0.0
   x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
   grade_weight = x * x * (3.0 - 2.0 * x)
   grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * grade_weight * ODYSSEY_GRADE_GAIN
   if grade_accel >= 0.0:
-    return max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
-  return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade_accel)
+    mapped = max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
+    cap_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0)) if grade_accel > 0.0 else 0.0
+    return mapped, cap_fraction
+  return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade_accel), 0.0
+
+
+def odyssey_uphill_gas_accel(accel, pitch):
+  """Translate net acceleration to grade-relative gas demand without changing ACCEL_COMMAND."""
+  return odyssey_uphill_gas_accel_with_cap(accel, pitch)[0]
 
 
 def odyssey_brake_accel(accel, pitch):
@@ -121,8 +129,8 @@ class OdysseyGasResponse:
     self.gear = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
-  def update(self, request, aego, pitch, speed, gear, eligible):
-    if not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed)):
+  def update(self, request, aego, pitch, speed, gear, eligible, cap_fraction=0.0):
+    if not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, cap_fraction)):
       self.reset()
       return 0.0
 
@@ -136,7 +144,9 @@ class OdysseyGasResponse:
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
       delayed_request = self.requests[0]
       residual = self.error.update(delayed_request - aego)
-      target = float(np.clip(ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual,
+      response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
+                                                          ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_fraction, 0.0, 1.0))
+      target = float(np.clip(response_gain * residual,
                              -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
       if request < delayed_request - 0.08:
         target = min(target, 0.0)
@@ -352,9 +362,10 @@ class CarController(CarControllerBase):
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
             gas_accel = accel
+            cap_fraction = 0.0
             if (odyssey_pitch_valid and CC.orientationNED[1] * self.odyssey_pitch.x > 0.0 and
                 actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
-              gas_accel = odyssey_uphill_gas_accel(accel, self.odyssey_pitch.x)
+              gas_accel, cap_fraction = odyssey_uphill_gas_accel_with_cap(accel, self.odyssey_pitch.x)
             gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
                                                                     self.odyssey_brake_selected,
                                                                     previous_gas,
@@ -370,7 +381,7 @@ class CarController(CarControllerBase):
                                  not CS.out.gasPressed and not CS.out.brakePressed and
                                  CS.out.vEgo >= 8.0 and self.gas > 0.0)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
-                                                            CS.out.vEgo, CS.out.gearShifter, feedback_eligible)
+                                                            CS.out.vEgo, CS.out.gearShifter, feedback_eligible, cap_fraction)
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
             if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
