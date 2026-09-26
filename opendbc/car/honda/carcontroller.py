@@ -30,13 +30,15 @@ ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
 ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
 ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
+ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS = 200_000_000
+ODYSSEY_BRAKE_RELEASE_TORQUE_DROP = 40.0
 # Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
 # the raw request; bounded uphill gas demand may delay only an already-active gas release.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False,
-                            gas_accel=None):
+                            gas_accel=None, release_brake=False):
   """Keep low-speed stop authority and separate road-speed coast from friction braking."""
   gas_accel = accel if gas_accel is None else gas_accel
   gas_selected = accel > 0.0
@@ -45,7 +47,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
     gas_selected |= previous_gas and gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
       gas_selected = False
-    brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0)
+    brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0 and not release_brake)
   else:
     brake_selected = accel <= 0.0
   # A positive request must release the brake domain immediately so the two commands remain
@@ -161,6 +163,34 @@ class OdysseyGasResponse:
     return self.correction
 
 
+class OdysseyBrakeRelease:
+  """Release mild braking when falling engine torque confirms an already-strong deceleration."""
+  def __init__(self):
+    self.samples = deque(maxlen=32)
+    self.gear = None
+
+  def reset(self):
+    self.samples.clear()
+    self.gear = None
+
+  def update(self, now_nanos, request, aego, torque, torque_ts_nanos, car_gas, gear, eligible):
+    if (not eligible or not all(math.isfinite(v) for v in (request, aego, torque, car_gas, gear)) or
+        not 1 <= gear <= 10 or abs(torque) > 1000 or car_gas != 0 or
+        torque_ts_nanos <= 0 or not 0 <= now_nanos - torque_ts_nanos < 60_000_000):
+      self.reset()
+      return False
+    if (self.gear is not None and gear != self.gear) or (self.samples and not 0 < now_nanos - self.samples[-1][0] < 40_000_000):
+      self.reset()
+    self.gear = gear
+    self.samples.append((now_nanos, request, torque))
+    prior = next((sample for sample in reversed(self.samples)
+                  if sample[0] <= now_nanos - ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS), None)
+    if prior is None or now_nanos - prior[0] > ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS + 40_000_000:
+      return False
+    return (ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
+            request - prior[1] > 0.05 and torque - prior[2] < -ODYSSEY_BRAKE_RELEASE_TORQUE_DROP)
+
+
 def compute_gb_honda_bosch(accel, speed):
   # TODO returns 0s, is unused
   return 0.0, 0.0
@@ -262,6 +292,7 @@ class CarController(CarControllerBase):
     self.odyssey_gas_selected = False
     self.odyssey_gas_bridge_active = False
     self.odyssey_gas_response = OdysseyGasResponse()
+    self.odyssey_brake_release = OdysseyBrakeRelease()
     self.odyssey_pitch = FirstOrderFilter(0.0, ODYSSEY_GRADE_FILTER_TAU, DT_CTRL)
 
   def update(self, CC, CS, now_nanos):
@@ -283,6 +314,7 @@ class CarController(CarControllerBase):
       self.odyssey_gas_selected = False
       self.odyssey_gas_bridge_active = False
       self.odyssey_gas_response.reset()
+      self.odyssey_brake_release.reset()
 
     # *** rate limit steer ***
     limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
@@ -365,6 +397,11 @@ class CarController(CarControllerBase):
           brake_domain = None
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
+            release_brake = self.odyssey_brake_release.update(
+              now_nanos, accel, CS.out.aEgo, CS.odyssey_engine_torque_estimate, CS.odyssey_engine_torque_ts_nanos,
+              CS.odyssey_car_gas, CS.odyssey_target_gear,
+              CC.longActive and self.odyssey_brake_selected and actuators.longControlState == LongCtrlState.pid and
+              not CS.out.gasPressed and not CS.out.brakePressed and CS.out.vEgo >= 8.0)
             gas_accel = accel
             cap_weight = 0.0
             if (odyssey_pitch_valid and CC.orientationNED[1] * self.odyssey_pitch.x > 0.0 and
@@ -374,7 +411,7 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_brake_selected,
                                                                     previous_gas,
                                                                     self.odyssey_gas_bridge_active,
-                                                                    gas_accel)
+                                                                    gas_accel, release_brake)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:

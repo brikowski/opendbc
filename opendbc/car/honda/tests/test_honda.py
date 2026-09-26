@@ -1,16 +1,21 @@
 import math
 import unittest
 
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY
+from opendbc.can import CANPacker
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, gen_empty_fingerprint
 from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
                                              ODYSSEY_NEGATIVE_GRADE_ACCEL_MAX,
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
                                              ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS,
-                                             ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_UPHILL_GAS_ACCEL_MAX, OdysseyGasResponse, odyssey_brake_accel,
+                                             ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_UPHILL_GAS_ACCEL_MAX, OdysseyBrakeRelease,
+                                             OdysseyGasResponse, odyssey_brake_accel,
                                              odyssey_command_domains, odyssey_gas_command, odyssey_low_speed_gas_command,
                                              odyssey_uphill_gas_accel, odyssey_uphill_gas_accel_with_cap)
 from opendbc.car.honda.values import CAR, HondaFlags
+from opendbc.car.honda.carstate import CarState
+from opendbc.car.honda.interface import CarInterface
+from opendbc.car.honda.values import DBC
 
 
 class TestHondaFingerprint(unittest.TestCase):
@@ -21,6 +26,18 @@ class TestHondaFingerprint(unittest.TestCase):
 
 
 class TestOdysseyLongitudinal(unittest.TestCase):
+  def test_received_engine_torque_is_parsed_from_odyssey_powertrain_bus(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    parser = CarState(CP).get_can_parsers(CP)[Bus.pt]
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    packer = CANPacker(dbc)
+    now_nanos = 1_000_000_000
+    parser.update([(now_nanos, [packer.make_can_msg('GAS_PEDAL_2', parser.bus,
+                                                     {'ENGINE_TORQUE_ESTIMATE': -145, 'CAR_GAS': 0})])])
+    self.assertEqual(parser.vl['GAS_PEDAL_2']['ENGINE_TORQUE_ESTIMATE'], -145)
+    self.assertEqual(parser.vl['GAS_PEDAL_2']['CAR_GAS'], 0)
+    self.assertEqual(parser.ts_nanos['GAS_PEDAL_2']['ENGINE_TORQUE_ESTIMATE'], now_nanos)
+
   def test_low_speed_positive_gas_trim_is_bounded_and_monotone(self):
     def gas(accel):
       return (accel + 0.2) / 2.2 * 2000.0
@@ -138,6 +155,39 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_command_domains(-0.11, 20.0, previous_gas=True), (True, False))
     self.assertEqual(odyssey_command_domains(-0.05, 20.0, previous_brake=True), (False, True))
     self.assertEqual(odyssey_command_domains(-0.05, 4.0), (False, True))
+
+  def test_torque_qualified_brake_release_retains_strong_and_low_speed_authority(self):
+    response = OdysseyBrakeRelease()
+    for frame in range(11):
+      now = 1_000_000_000 + frame * 20_000_000
+      request = -.28 + frame * .008
+      release = response.update(now, request, request - .3, -100. - frame * 5.,
+                                now - 5_000_000, 0., 6, True)
+      if frame < 10:
+        self.assertFalse(release)
+    self.assertTrue(release)
+    self.assertEqual(odyssey_command_domains(request, 20., previous_brake=True, release_brake=release), (False, False))
+    self.assertEqual(odyssey_command_domains(-.4, 20., previous_brake=True, release_brake=True), (False, True))
+    self.assertEqual(odyssey_command_domains(request, 4., previous_brake=True, release_brake=True), (False, True))
+    self.assertFalse(response.update(now + 20_000_000, request, request - .3, -160., now - 80_000_000, 0., 6, True))
+    self.assertFalse(response.samples)
+    for frame in range(11):
+      now += 20_000_000
+      release = response.update(now, request, request - .3, -200. - frame * 5., now - 5_000_000,
+                                0., 7, True)
+    self.assertFalse(release)  # no rising request, even with falling torque
+    self.assertFalse(response.update(now + 20_000_000, request, request - .3, -260., now + 30_000_000, 0., 7, True))
+    self.assertFalse(response.samples)
+
+  def test_brake_release_rejects_flat_torque_despite_rising_request_and_overdeceleration(self):
+    response = OdysseyBrakeRelease()
+    for frame in range(12):
+      now = 1_000_000_000 + frame * 20_000_000
+      request = -.28 + frame * .008
+      self.assertFalse(response.update(now, request, request - .3, -120., now - 5_000_000, 0., 6, True))
+    self.assertFalse(response.update(now + 20_000_000, request + .008, request - .3, -175.,
+                                     now + 15_000_000, 1., 6, True))
+    self.assertFalse(response.samples)
 
   def test_uphill_negative_gas_demand_delays_only_an_active_gas_release(self):
     gas_accel = odyssey_uphill_gas_accel(-0.23, 0.03)
