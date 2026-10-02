@@ -1,13 +1,314 @@
+import math
+from collections import deque
+
 import numpy as np
 
 from opendbc.can import CANPacker
-from opendbc.car import Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, rate_limit, make_tester_present_msg, structs
+from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.honda import hondacan
 from opendbc.car.honda.values import CAR, CruiseButtons, HondaFlags, CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
 
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
 LongCtrlState = structs.CarControl.Actuators.LongControlState
+
+
+ODYSSEY_LOW_SPEED_DOMAIN_VEGO = 5.0
+# Include the float32 representation of a nominal -0.10 m/s2 carControl request.
+ODYSSEY_GAS_BRIDGE_ENTRY = -0.101
+ODYSSEY_GAS_BRIDGE_COMMAND = -60.0
+ODYSSEY_GRADE_FILTER_TAU = 0.5
+ODYSSEY_GRADE_RAMP_ACCEL = 0.30
+ODYSSEY_GRADE_GAIN = 0.6
+ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
+ODYSSEY_ZERO_GAS_GRADE_GAIN = 0.25
+ODYSSEY_RESPONSE_DELAY_FRAMES = 25  # 0.5 s Bosch longitudinal delay at 50 Hz
+ODYSSEY_RESPONSE_MAX_COUNTS = 100.0
+ODYSSEY_RESPONSE_COUNTS_PER_ACCEL = 200.0
+ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
+ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
+ODYSSEY_BRAKE_GRADE_GAIN = 0.3
+ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
+ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS = 200_000_000
+ODYSSEY_BRAKE_RELEASE_TORQUE_DROP = 40.0
+ODYSSEY_COAST_RELEASE_GRAVITY = 0.25
+ODYSSEY_COAST_RELEASE_ERROR = 0.20
+# Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
+# the raw request; gas continuity and response-qualified coast release never add friction braking.
+ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
+ODYSSEY_LKA_STEER_MAX = 2560
+ODYSSEY_STEER_ERROR_MIN = 0.10
+ODYSSEY_STEER_ERROR_FRAMES = 20
+
+
+class OdysseySteeringAuthority:
+  """Open the extra steering range only for persistent same-direction tracking error."""
+  def __init__(self, counts_per_accel):
+    self.counts_per_accel = counts_per_accel
+    self.error_frames = 0
+    self.direction = 0
+
+  def limit(self, requested, curvature, current_curvature, speed, eligible, maximum):
+    desired_accel = curvature * speed * speed
+    error = (curvature - current_curvature) * speed * speed
+    direction = int(np.sign(requested))
+    qualified = (eligible and 20.0 <= speed <= 33.0 and abs(desired_accel) >= 1.3 and
+                 abs(requested) >= ODYSSEY_LKA_STEER_MAX and
+                 desired_accel * direction > 0.0 and
+                 error * direction > ODYSSEY_STEER_ERROR_MIN and
+                 math.isfinite(error) and math.isfinite(desired_accel))
+    if not qualified or direction != self.direction:
+      self.error_frames = 0
+    self.direction = direction if qualified else 0
+    if qualified:
+      self.error_frames += 1
+    extra = 0.0
+    if self.error_frames >= ODYSSEY_STEER_ERROR_FRAMES:
+      extra = min(maximum - ODYSSEY_LKA_STEER_MAX,
+                  (abs(error) - ODYSSEY_STEER_ERROR_MIN) * self.counts_per_accel)
+    return float(np.clip(requested, -ODYSSEY_LKA_STEER_MAX - extra, ODYSSEY_LKA_STEER_MAX + extra))
+
+
+def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False,
+                            gas_accel=None, release_brake=False, release_gas=False):
+  """Keep low-speed stop authority and separate road-speed coast from friction braking."""
+  gas_accel = accel if gas_accel is None else gas_accel
+  gas_selected = accel > 0.0
+  if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
+    gas_selected |= not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0
+    gas_selected |= previous_gas and gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
+      gas_selected = False
+    brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0 and not release_brake)
+  else:
+    brake_selected = accel <= 0.0
+  if release_gas and accel < 0.0:
+    gas_selected = False
+  # A positive request must release the brake domain immediately so the two commands remain
+  # mutually exclusive, matching the stateful brake-permit behavior used by other OEM ports.
+  return gas_selected, brake_selected and not gas_selected
+
+
+def odyssey_gas_command(accel, mapped_gas, gas_selected, previous_gas, bridge_active, grade_weight=0.0):
+  """Pre-activate gas at a grade-scaled command while keeping the level-road bridge."""
+  bridge_active = gas_selected and accel < 0.0 and (bridge_active or not previous_gas)
+  gas = ODYSSEY_GAS_BRIDGE_COMMAND + grade_weight * (mapped_gas - ODYSSEY_GAS_BRIDGE_COMMAND) if bridge_active else mapped_gas
+  return (gas if gas_selected else 0.0), bridge_active
+
+
+def odyssey_grade_weight(pitch):
+  grade = max(0.0, math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY)
+  load = min(grade / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+  return load * load
+
+
+def odyssey_uphill_gas_accel_with_cap(accel, pitch):
+  """Return the gas-map input and a smooth feedback weight for clipped uphill load."""
+  grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
+  zero_grade = 0.0
+  if grade > 0.0:
+    zero_grade = min(grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+  if zero_grade > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel <= 0.0:
+    gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    if accel <= gas_split:
+      x = (accel - ODYSSEY_ROAD_BRAKE_ENTRY) / (gas_split - ODYSSEY_ROAD_BRAKE_ENTRY)
+      zero_grade *= x * x * (3.0 - 2.0 * x)
+    # Preserve request sensitivity through zero, even on a steep climb.
+    return accel + zero_grade, 0.0
+  if accel <= 0.0:
+    return accel, 0.0
+  x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+  grade_weight = x * x * (3.0 - 2.0 * x)
+  if grade > 0.0:
+    grade_accel = zero_grade + (grade * ODYSSEY_GRADE_GAIN - zero_grade) * grade_weight
+  else:
+    grade_accel = grade * grade_weight * ODYSSEY_GRADE_GAIN
+  if grade_accel >= 0.0:
+    mapped = max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
+    if grade_accel > 0.0:
+      limited_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0))
+      load = min(grade_accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+      load_weight = load * load * (3.0 - 2.0 * load)
+      return mapped, limited_fraction * load_weight
+    return mapped, 0.0
+  return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade_accel), 0.0
+
+
+def odyssey_brake_accel(accel, pitch):
+  """Translate the requested net deceleration into Honda's grade-relative brake command."""
+  if accel >= 0.0:
+    return accel
+  grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
+  return min(accel + grade_accel, 0.0)
+
+
+def odyssey_low_speed_gas_command(gas, accel, speed):
+  """Bound positive-gas feedforward where Odyssey acceleration exceeds the net request."""
+  if accel <= 0.0 or gas <= 0.0:
+    return gas
+
+  def smoothstep(value):
+    x = float(np.clip(value, 0.0, 1.0))
+    return x * x * (3.0 - 2.0 * x)
+
+  speed_weight = smoothstep((speed - 8.0) / 4.0) * smoothstep((24.0 - speed) / 4.0)
+  request_weight = smoothstep((accel - 0.4) / 0.4) * smoothstep((2.0 - accel) / 0.4)
+  return max(0.0, gas - ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS * speed_weight * request_weight)
+
+
+class OdysseyGasResponse:
+  """Compare a delayed gas-domain request with the vehicle's measured response."""
+  def __init__(self):
+    self.correction = 0.0
+    self.requests = deque(maxlen=ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+    self.pitch_peak = None
+    self.gear = None
+    self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
+
+  def reset(self):
+    self.__init__()
+
+  def clear_observer(self):
+    self.requests.clear()
+    self.pitch_peak = None
+    self.gear = None
+    self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
+
+  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0):
+    if not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, cap_weight, response_weight)):
+      self.reset()
+      return 0.0
+
+    if (self.gear is not None and gear != self.gear) or (self.pitch_peak is not None and pitch < self.pitch_peak - 0.01):
+      self.clear_observer()
+    self.gear = gear
+    self.pitch_peak = pitch if self.pitch_peak is None else max(self.pitch_peak, pitch)
+    self.requests.append(request)
+
+    target = 0.0
+    if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
+      delayed_request = self.requests[0]
+      residual = self.error.update(delayed_request - aego)
+      response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
+                                                          ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
+      target = float(np.clip(response_weight * response_gain * residual,
+                             -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
+      if request < delayed_request - 0.08:
+        target = min(target, 0.0)
+      elif request > delayed_request + 0.08:
+        target = max(target, 0.0)
+    self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
+                                     self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
+    # Do not carry an unused near-max launch estimate into the next gear.
+    if response_weight == 0.0 and self.correction == 0.0:
+      self.clear_observer()
+    return self.correction
+
+
+class OdysseyBrakeRelease:
+  """Release mild braking when falling engine torque confirms an already-strong deceleration."""
+  def __init__(self):
+    self.samples = deque(maxlen=32)
+    self.gear = None
+
+  def reset(self):
+    self.samples.clear()
+    self.gear = None
+
+  def update(self, now_nanos, request, aego, torque, torque_ts_nanos, car_gas, gear, eligible):
+    if (not eligible or not all(math.isfinite(v) for v in (request, aego, torque, car_gas, gear)) or
+        not 1 <= gear <= 10 or abs(torque) > 1000 or car_gas != 0 or
+        torque_ts_nanos <= 0 or not 0 <= now_nanos - torque_ts_nanos < 60_000_000):
+      self.reset()
+      return False
+    if (self.gear is not None and gear != self.gear) or (self.samples and not 0 < now_nanos - self.samples[-1][0] < 40_000_000):
+      self.reset()
+    self.gear = gear
+    self.samples.append((now_nanos, request, torque))
+    prior = next((sample for sample in reversed(self.samples)
+                  if sample[0] <= now_nanos - ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS), None)
+    if prior is None or now_nanos - prior[0] > ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS + 40_000_000:
+      return False
+    return (ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
+            request - prior[1] > 0.05 and torque - prior[2] < -ODYSSEY_BRAKE_RELEASE_TORQUE_DROP)
+
+
+class OdysseyCoastResponse:
+  """Estimate passive acceleration from previously issued, settled coast commands."""
+  def __init__(self):
+    self.drag = {}
+    self.warmup = {}
+    self.gear = None
+    self.coast_start = None
+
+  def reset(self):
+    self.__init__()
+
+  def update(self, frame, gear, pitch, aego, coast, eligible):
+    if not eligible or not 1 <= gear <= 10 or not all(math.isfinite(v) for v in (pitch, aego)):
+      self.reset()
+      return None
+    if gear != self.gear:
+      self.gear = gear
+      self.coast_start = None
+
+    gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
+    forecast = gravity + self.drag[gear] if gear in self.drag else None
+    if not coast:
+      self.coast_start = None
+    else:
+      if self.coast_start is None:
+        self.coast_start = frame
+      if frame - self.coast_start >= 50 and frame % 10 == 0:
+        residual = aego - gravity
+        if gear not in self.drag:
+          samples = self.warmup.setdefault(gear, deque(maxlen=5))
+          samples.append(residual)
+          if len(samples) == samples.maxlen:
+            self.drag[gear] = float(np.median(samples))
+        else:
+          self.drag[gear] += (0.1 / 20.1) * float(np.clip(residual - self.drag[gear], -0.3, 0.3))
+    return forecast
+
+
+class OdysseyGasCoastRelease:
+  """Release excess downhill gas into coast using prior coast response or an exhausted gas command."""
+  def __init__(self):
+    self.requests = deque(maxlen=12)
+    self.gear = None
+    self.active = False
+
+  def reset(self):
+    self.__init__()
+
+  def update(self, frame, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False):
+    if (not eligible or not 1 <= gear <= 10 or
+        not all(math.isfinite(v) for v in (request, aego, speed, pitch))):
+      self.reset()
+      return False
+    if gear != self.gear:
+      self.reset()
+      self.gear = gear
+    self.requests.append((frame, request))
+    prior = next((value for old_frame, value in self.requests if old_frame <= frame - 20), None)
+    request_slope = (request - prior) / 0.2 if prior is not None else 0.0
+
+    downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
+    if (request >= 0.0 or request <= ODYSSEY_ROAD_BRAKE_ENTRY or
+        not 8.0 <= speed <= 35.0 or downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY or
+        aego - request < 0.05):
+      self.active = False
+    if (not self.active and previous_gas and 8.0 <= speed <= 35.0 and
+        ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and
+        downhill_gravity > ODYSSEY_COAST_RELEASE_GRAVITY and
+        aego - request > ODYSSEY_COAST_RELEASE_ERROR and
+        # With no coast history, release only after bounded gas feedback has reached the zero floor.
+        ((passive_accel is not None and passive_accel - request > ODYSSEY_COAST_RELEASE_ERROR) or
+         (passive_accel is None and gas_floor)) and
+        request_slope < -0.20):
+      self.active = True
+    return self.active
 
 
 def compute_gb_honda_bosch(accel, speed):
@@ -107,12 +408,29 @@ class CarController(CarControllerBase):
     self.gas = 0.0
     self.brake = 0.0
     self.last_torque = 0.0
+    self.odyssey_steering_authority = (OdysseySteeringAuthority(self.params.STEER_MAX / CP.lateralTuning.torque.latAccelFactor)
+                                       if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else None)
+    self.odyssey_brake_selected = False
+    self.odyssey_gas_selected = False
+    self.odyssey_gas_bridge_active = False
+    self.odyssey_gas_response = OdysseyGasResponse()
+    self.odyssey_brake_release = OdysseyBrakeRelease()
+    self.odyssey_coast_response = OdysseyCoastResponse()
+    self.odyssey_gas_coast_release = OdysseyGasCoastRelease()
+    self.odyssey_pitch = FirstOrderFilter(0.0, ODYSSEY_GRADE_FILTER_TAU, DT_CTRL)
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
+    odyssey_pitch_valid = (self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR and
+                           len(CC.orientationNED) == 3 and math.isfinite(CC.orientationNED[1]))
+    if odyssey_pitch_valid:
+      self.odyssey_pitch.update(CC.orientationNED[1])
+    elif self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      # Invalid pose must not poison the grade filter or a subsequent Honda command.
+      self.odyssey_pitch = FirstOrderFilter(0.0, ODYSSEY_GRADE_FILTER_TAU, DT_CTRL)
 
     if CC.longActive:
       accel = actuators.accel
@@ -120,9 +438,17 @@ class CarController(CarControllerBase):
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
+      self.odyssey_brake_selected = False
+      self.odyssey_gas_selected = False
+      self.odyssey_gas_bridge_active = False
+      self.odyssey_gas_response.reset()
+      self.odyssey_brake_release.reset()
+      self.odyssey_coast_response.reset()
+      self.odyssey_gas_coast_release.reset()
 
     # *** rate limit steer ***
-    limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
+    previous_torque = self.last_torque
+    limited_torque = rate_limit(actuators.torque, previous_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
                                 self.params.STEER_DELTA_UP * DT_CTRL)
     self.last_torque = limited_torque
 
@@ -139,6 +465,17 @@ class CarController(CarControllerBase):
 
     # steer torque is converted back to CAN reference (positive when steering right)
     apply_torque = int(np.clip(-limited_torque, -1.0, 1.0) * self.params.STEER_MAX)
+    if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      requested = -limited_torque * self.params.STEER_MAX
+      target = self.odyssey_steering_authority.limit(requested, actuators.curvature, CC.currentCurvature,
+                                                     CS.out.vEgo,
+                                                     CC.latActive and not CS.out.steeringPressed and
+                                                     not CS.out.steerFaultTemporary and not CS.out.steerFaultPermanent,
+                                                     self.params.STEER_MAX)
+      physical_slew = self.params.STEER_DELTA_UP * DT_CTRL * self.params.STEER_MAX
+      apply_torque = int(rate_limit(target, -previous_torque * self.params.STEER_MAX,
+                                    -physical_slew, physical_slew)) if CC.latActive else 0
+      self.last_torque = -apply_torque / self.params.STEER_MAX
 
     # Send CAN commands
     can_sends = []
@@ -197,11 +534,75 @@ class CarController(CarControllerBase):
         if self.CP.flags & HondaFlags.BOSCH:
           self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
-
           stopping = actuators.longControlState == LongCtrlState.stopping
+          gas_domain = None
+          brake_domain = None
+          if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+            previous_gas = self.odyssey_gas_selected
+            coast_eligible = (CC.longActive and actuators.longControlState == LongCtrlState.pid and
+                              not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
+                              0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
+            passive_accel = self.odyssey_coast_response.update(
+              self.frame, CS.odyssey_target_gear, self.odyssey_pitch.x, CS.out.aEgo,
+              not previous_gas and not self.odyssey_brake_selected, coast_eligible)
+            release_gas = self.odyssey_gas_coast_release.update(
+              self.frame, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
+              CS.odyssey_target_gear, passive_accel, previous_gas,
+              coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0,
+              self.gas + self.odyssey_gas_response.correction <= 0.0)
+            release_brake = self.odyssey_brake_release.update(
+              now_nanos, accel, CS.out.aEgo, CS.odyssey_engine_torque_estimate, CS.odyssey_engine_torque_ts_nanos,
+              CS.odyssey_car_gas, CS.odyssey_target_gear,
+              CC.longActive and self.odyssey_brake_selected and actuators.longControlState == LongCtrlState.pid and
+              not CS.out.gasPressed and not CS.out.brakePressed and CS.out.vEgo >= 8.0)
+            gas_accel = accel
+            cap_weight = 0.0
+            bridge_weight = 0.0
+            if (odyssey_pitch_valid and CC.orientationNED[1] * self.odyssey_pitch.x > 0.0 and
+                actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
+              gas_accel, cap_weight = odyssey_uphill_gas_accel_with_cap(accel, self.odyssey_pitch.x)
+              bridge_weight = odyssey_grade_weight(self.odyssey_pitch.x)
+            gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
+                                                                    self.odyssey_brake_selected,
+                                                                    previous_gas,
+                                                                    self.odyssey_gas_bridge_active,
+                                                                    gas_accel, release_brake, release_gas)
+            self.odyssey_brake_selected = brake_selected
+            self.odyssey_gas_selected = gas_selected
+            if gas_selected and gas_accel != accel:
+              self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            feedback_eligible = (CC.longActive and gas_selected and previous_gas and
+                                 not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
+                                 actuators.longControlState == LongCtrlState.pid and
+                                 not CS.out.gasPressed and not CS.out.brakePressed and
+                                 CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and self.gas > 0.0)
+            response_weight = 1.0
+            if CS.out.vEgo < 8.0:
+              # The gas map approaches its rail during a low-gear launch; taper feedback there.
+              gas_max_accel = self.params.BOSCH_GAS_LOOKUP_BP[-1]
+              response_weight = float(np.clip((0.75 * gas_max_accel - accel) / (0.25 * gas_max_accel), 0.0, 1.0))
+            correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
+                                                            CS.out.vEgo, CS.out.gearShifter, feedback_eligible,
+                                                            cap_weight, response_weight)
+            if feedback_eligible:
+              self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
+            if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
+              self.gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
+            if (brake_selected and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and odyssey_pitch_valid and
+                actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
+              brake_accel = odyssey_brake_accel(accel, self.odyssey_pitch.x)
+              self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+            # The low-speed domain keeps every non-positive request on the brake side without
+            # reshaping the controller command.
+            self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
+                                                                            previous_gas, self.odyssey_gas_bridge_active,
+                                                                            bridge_weight)
+            gas_domain = gas_selected
+            brake_domain = brake_selected
+
           self.stopping_counter = self.stopping_counter + 1 if stopping else 0
           can_sends.extend(hondacan.create_acc_commands(self.packer, self.CAN, CC.enabled, CC.longActive, self.accel, self.gas,
-                                                        self.stopping_counter, self.CP))
+                                                        self.stopping_counter, self.CP, gas_domain, brake_domain))
         else:
           apply_brake = np.clip(self.brake_last - wind_brake, 0.0, 1.0)
           apply_brake = int(np.clip(apply_brake * self.params.NIDEC_BRAKE_MAX, 0, self.params.NIDEC_BRAKE_MAX - 1))
