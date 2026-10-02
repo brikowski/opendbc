@@ -567,6 +567,14 @@ class CarController(CarControllerBase):
                                                                     previous_gas,
                                                                     self.odyssey_gas_bridge_active,
                                                                     gas_accel, release_brake, release_gas)
+            coast_start = self.odyssey_coast_response.coast_start
+            coast_gas_entry = (coast_eligible and not gas_selected and not brake_selected and not previous_gas and
+                               coast_start is not None and self.frame - coast_start >= 50 and
+                               8.0 <= CS.out.vEgo <= 35.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0 and
+                               gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and passive_accel is not None and
+                               passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
+                               CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR)
+            gas_selected |= coast_gas_entry
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:
@@ -594,8 +602,9 @@ class CarController(CarControllerBase):
               self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
             # The low-speed domain keeps every non-positive request on the brake side without
             # reshaping the controller command.
+            # Settled coast under-response qualifies direct entry into mapped gas.
             self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
-                                                                            previous_gas, self.odyssey_gas_bridge_active,
+                                                                            previous_gas or coast_gas_entry, self.odyssey_gas_bridge_active,
                                                                             bridge_weight)
             gas_domain = gas_selected
             brake_domain = brake_selected
