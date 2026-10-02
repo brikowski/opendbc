@@ -80,6 +80,52 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         self.assertEqual(command(3.1, 1.0), direction * 3840)
         self.assertEqual(command(3.1, 0.0), direction * 2560)
 
+  def test_steering_wire_keeps_authority_as_turn_demand_eases_with_underresponse(self):
+    from opendbc.safety.tests.libsafety import libsafety_py
+
+    for direction, alpha_long, bus in ((-1, True, 1), (1, True, 1), (-1, False, 0), (1, False, 0)):
+      with self.subTest(direction=direction, alpha_long=alpha_long):
+        CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], alpha_long, False, False)
+        dbc = DBC[CP.carFingerprint][Bus.pt]
+        controller = CarController({Bus.pt: dbc}, CP)
+        parser = CANParser(dbc, [('STEERING_CONTROL', 0)], bus)
+        safety = libsafety_py.libsafety
+        config = CP.safetyConfigs[-1]
+        self.assertEqual(safety.set_safety_hooks(config.safetyModel.raw, config.safetyParam), 0)
+        safety.init_tests()
+        safety.set_controls_allowed(True)
+        control = structs.CarControl()
+        control.enabled = control.latActive = True
+        control.actuators.torque = -direction * 0.9
+        state = structs.CarState()
+        state.vEgo = 22.0
+        CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
+                             odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=0)
+        counts = []
+        for frame in range(190):
+          demand = 1.4 if frame < 100 else 1.25
+          control.actuators.curvature = direction * demand / state.vEgo**2
+          control.currentCurvature = direction * (demand - 0.4) / state.vEgo**2
+          if frame >= 160:
+            control.currentCurvature = control.actuators.curvature
+          output, sends = controller.update(control.as_reader(), CS, frame * 10_000_000)
+          steering = [(addr, dat, src) for addr, dat, src in sends if addr == 0xE4 and src == bus]
+          self.assertEqual(len(steering), 1)
+          for addr, dat, src in steering:
+            self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, src, dat)))
+          parser.update([(frame * 10_000_000, steering)])
+          counts.append(parser.vl['STEERING_CONTROL']['STEER_TORQUE'])
+          self.assertEqual(counts[-1], output.torqueOutputCan)
+          self.assertLessEqual(abs(counts[-1]), 3840)
+          if 100 <= frame < 160:
+            self.assertAlmostEqual(counts[-1], counts[99], delta=1)
+          if frame >= 160:
+            self.assertGreaterEqual(abs(counts[-1]), 2560)
+        self.assertGreater(abs(counts[99]), 3000)
+        self.assertEqual(abs(counts[-1]), 2560)
+        self.assertLessEqual(max(abs(b - a) for a, b in zip(counts, counts[1:], strict=False)), 77)
+
   def test_steering_wire_and_output_follow_bounded_authority_in_both_bus_modes(self):
     for alpha_long, bus, speed in ((True, 1, 31.0), (False, 0, 31.0), (True, 1, 22.0), (False, 0, 22.0)):
       with self.subTest(alpha_long=alpha_long, speed=speed):
