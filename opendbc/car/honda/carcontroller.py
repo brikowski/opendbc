@@ -612,8 +612,7 @@ class CarController(CarControllerBase):
                 actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
               brake_accel = odyssey_brake_accel(accel, self.odyssey_pitch.x)
               self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
-            if (CC.longActive and brake_selected and actuators.longControlState == LongCtrlState.pid and
-                not CS.out.gasPressed and not CS.out.brakePressed):
+            if CC.longActive and brake_selected and not CS.out.gasPressed and not CS.out.brakePressed:
               self.accel = odyssey_creep_brake_accel(self.accel, CS.out.vEgo)
             # Settled coast under-response qualifies direct entry into mapped gas.
             self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
