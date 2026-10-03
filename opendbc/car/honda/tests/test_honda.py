@@ -80,7 +80,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         self.assertEqual(command(3.1, 1.0), direction * 3840)
         self.assertEqual(command(3.1, 0.0), direction * 2560)
 
-  def test_steering_wire_keeps_authority_as_turn_demand_eases_with_underresponse(self):
+  def test_steering_wire_preserves_persistent_request_through_ramp_and_turn_exit(self):
     from opendbc.safety.tests.libsafety import libsafety_py
 
     for direction, alpha_long, bus in ((-1, True, 1), (1, True, 1), (-1, False, 0), (1, False, 0)):
@@ -122,6 +122,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
             self.assertAlmostEqual(counts[-1], counts[99], delta=1)
           if frame >= 160:
             self.assertGreaterEqual(abs(counts[-1]), 2560)
+        self.assertGreater(abs(counts[34]), 2560)
         self.assertGreater(abs(counts[99]), 3000)
         self.assertEqual(abs(counts[-1]), 2560)
         self.assertLessEqual(max(abs(b - a) for a, b in zip(counts, counts[1:], strict=False)), 77)

@@ -475,7 +475,7 @@ class CarController(CarControllerBase):
     # steer torque is converted back to CAN reference (positive when steering right)
     apply_torque = int(np.clip(-limited_torque, -1.0, 1.0) * self.params.STEER_MAX)
     if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-      requested = -limited_torque * self.params.STEER_MAX
+      requested = -actuators.torque * self.params.STEER_MAX
       target = self.odyssey_steering_authority.limit(requested, actuators.curvature, CC.currentCurvature,
                                                      CS.out.vEgo,
                                                      CC.latActive and not CS.out.steeringPressed and
