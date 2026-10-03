@@ -15,7 +15,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_G
                                              OdysseySteeringAuthority,
                                              OdysseyCoastResponse, OdysseyGasCoastRelease, OdysseyGasResponse, odyssey_brake_accel,
                                              odyssey_command_domains, odyssey_gas_command, odyssey_grade_weight,
-                                             odyssey_low_speed_gas_command,
+                                             odyssey_creep_brake_accel, odyssey_low_speed_gas_command,
                                              odyssey_uphill_gas_accel_with_cap)
 from opendbc.car.honda.values import CAR, CarControllerParams, HondaFlags
 from opendbc.car.honda.carstate import CarState
@@ -180,6 +180,24 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
 
 
 class TestOdysseyLongitudinal(unittest.TestCase):
+  def test_creep_braking_is_bounded_monotone_and_releases_with_request(self):
+    for speed in (0.0, 0.5, 1.0, 1.5, 2.0, 5.0):
+      requests = [-3.5 + i * 0.005 for i in range(741)]
+      commands = [odyssey_creep_brake_accel(q, speed) for q in requests]
+      self.assertTrue(all(left <= right + 1e-12 for left, right in zip(commands, commands[1:], strict=False)))
+      for q, command in zip(requests, commands, strict=True):
+        self.assertLessEqual(q - command, 0.25 + 1e-12)
+        self.assertGreaterEqual(q - command, -1e-12)
+        if q <= -0.8 or q >= 0.0 or speed >= 2.0:
+          self.assertAlmostEqual(command, q)
+    self.assertAlmostEqual(odyssey_creep_brake_accel(-0.3, 0.6), -0.55)
+    self.assertAlmostEqual(odyssey_creep_brake_accel(-0.3, 1.5), -0.425)
+    for speed in (-1.0, math.nan, math.inf):
+      self.assertEqual(odyssey_creep_brake_accel(-0.3, speed), -0.3)
+    for request in (-0.8, -0.3, 0.0):
+      self.assertLess(abs(odyssey_creep_brake_accel(request - 1e-6, 0.5) -
+                          odyssey_creep_brake_accel(request + 1e-6, 0.5)), 4e-6)
+
   def test_nonfinite_pitch_falls_back_to_raw_command_and_recovers(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]

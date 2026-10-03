@@ -143,6 +143,15 @@ def odyssey_brake_accel(accel, pitch):
   return min(accel + grade_accel, 0.0)
 
 
+def odyssey_creep_brake_accel(accel, speed):
+  """Compensate weak creep-speed braking without retaining a released request."""
+  if not math.isfinite(speed) or speed < 0.0 or accel >= 0.0:
+    return accel
+  correction = float(np.interp(accel, [-0.8, -0.3, 0.0], [0.0, -0.25, 0.0]))
+  weight = float(np.interp(speed, [1.0, 2.0], [1.0, 0.0]))
+  return accel + weight * correction
+
+
 def odyssey_low_speed_gas_command(gas, accel, speed):
   """Bound positive-gas feedforward where Odyssey acceleration exceeds the net request."""
   if accel <= 0.0 or gas <= 0.0:
@@ -603,8 +612,9 @@ class CarController(CarControllerBase):
                 actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
               brake_accel = odyssey_brake_accel(accel, self.odyssey_pitch.x)
               self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
-            # The low-speed domain keeps every non-positive request on the brake side without
-            # reshaping the controller command.
+            if (CC.longActive and brake_selected and actuators.longControlState == LongCtrlState.pid and
+                not CS.out.gasPressed and not CS.out.brakePressed):
+              self.accel = odyssey_creep_brake_accel(self.accel, CS.out.vEgo)
             # Settled coast under-response qualifies direct entry into mapped gas.
             self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
                                                                             previous_gas or coast_gas_entry, self.odyssey_gas_bridge_active,
