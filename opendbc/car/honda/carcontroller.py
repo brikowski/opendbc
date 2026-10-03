@@ -568,13 +568,16 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_gas_bridge_active,
                                                                     gas_accel, release_brake, release_gas)
             coast_start = self.odyssey_coast_response.coast_start
-            coast_gas_entry = (coast_eligible and not gas_selected and not brake_selected and not previous_gas and
-                               coast_start is not None and self.frame - coast_start >= 50 and
-                               8.0 <= CS.out.vEgo <= 35.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel < 0.0 and
-                               gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and passive_accel is not None and
+            settled_coast = (coast_eligible and not gas_selected and not brake_selected and not previous_gas and
+                             coast_start is not None and self.frame - coast_start >= 50 and
+                             8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
+            coast_gas_entry = (settled_coast and ODYSSEY_ROAD_BRAKE_ENTRY < accel and
+                               gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and
                                passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                                CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR)
             gas_selected |= coast_gas_entry
+            brake_selected |= (settled_coast and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
+                               CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR)
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:

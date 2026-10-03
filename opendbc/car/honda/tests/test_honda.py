@@ -627,6 +627,99 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
         self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked == 'low_speed')
 
+  def test_settled_coast_deceleration_shortfall_enters_brakes_and_releases_on_positive_request(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    controller = CarController({Bus.pt: dbc}, CP)
+    control = structs.CarControl()
+    control.enabled = control.longActive = True
+    control.orientationNED = [0.0, -0.03, 0.0]
+    control.actuators.accel = -0.15
+    control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+    state = structs.CarState()
+    state.vEgo, state.aEgo = 20.0, 0.3
+    CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                         odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                         odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7)
+    parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+
+    def step():
+      now = 1_000_000_000 + controller.frame * 10_000_000
+      CS.odyssey_engine_torque_ts_nanos = now - 5_000_000
+      output, sends = controller.update(control.as_reader(), CS, now)
+      parser.update([(now, [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1])])
+      return output, parser.vl['ACC_CONTROL']
+
+    for _ in range(50):
+      _, signals = step()
+      self.assertEqual(signals['BRAKE_REQUEST'], 0)
+    for _ in range(50):
+      output, signals = step()
+    self.assertEqual(signals['BRAKE_REQUEST'], 1)
+    self.assertEqual(signals['GAS_COMMAND'], -30000)
+    self.assertAlmostEqual(signals['ACCEL_COMMAND'], odyssey_brake_accel(-0.15, controller.odyssey_pitch.x), delta=0.01)
+    self.assertAlmostEqual(output.accel, signals['ACCEL_COMMAND'], delta=0.01)
+    control.actuators.accel = 0.1
+    _, signals = step()
+    self.assertEqual(signals['BRAKE_REQUEST'], 0)
+    self.assertGreater(signals['GAS_COMMAND'], 0)
+
+  def test_coast_brake_entry_requires_settled_reliable_deceleration_shortfall(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for blocked in ('settling', 'no_history', 'stale', 'pose', 'gas_pedal', 'brake_pedal', 'inactive',
+                    'not_pid', 'low_speed', 'high_speed', 'gear', 'forecast', 'response', 'positive'):
+      with self.subTest(blocked=blocked):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.odyssey_pitch.x = -0.03
+        controller.odyssey_coast_response.gear = 7
+        controller.odyssey_coast_response.coast_start = 0
+        controller.odyssey_coast_response.drag[7] = 0.3 + ACCELERATION_DUE_TO_GRAVITY * math.sin(-0.03)
+        control = structs.CarControl()
+        control.enabled = control.longActive = True
+        control.orientationNED = [0.0, -0.03, 0.0]
+        control.actuators.accel = -0.15
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState()
+        state.vEgo, state.aEgo = 20.0, 0.3
+        CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                             odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_target_gear=7)
+        if blocked == 'settling':
+          controller.odyssey_coast_response.coast_start = 98
+        elif blocked == 'no_history':
+          controller.odyssey_coast_response.drag.clear()
+        elif blocked == 'stale':
+          CS.odyssey_engine_torque_ts_nanos -= 80_000_000
+        elif blocked == 'pose':
+          control.orientationNED = []
+        elif blocked == 'gas_pedal':
+          state.gasPressed = True
+        elif blocked == 'brake_pedal':
+          state.brakePressed = True
+        elif blocked == 'inactive':
+          control.longActive = False
+        elif blocked == 'not_pid':
+          control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.stopping
+        elif blocked == 'low_speed':
+          state.vEgo = 4.0
+        elif blocked == 'high_speed':
+          state.vEgo = 36.0
+        elif blocked == 'gear':
+          CS.odyssey_target_gear = 8
+          controller.odyssey_coast_response.drag[8] = controller.odyssey_coast_response.drag[7]
+        elif blocked == 'forecast':
+          controller.odyssey_coast_response.drag[7] = -0.1 + ACCELERATION_DUE_TO_GRAVITY * math.sin(-0.03)
+        elif blocked == 'response':
+          state.aEgo = -0.1
+        elif blocked == 'positive':
+          control.actuators.accel = 0.1
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        _, sends = controller.update(control.as_reader(), CS, 1_000_000_000)
+        parser.update([(1_000_000_000, [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1])])
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked == 'low_speed')
+
   def test_torque_qualified_brake_release_retains_strong_and_low_speed_authority(self):
     response = OdysseyBrakeRelease()
     for frame in range(11):
