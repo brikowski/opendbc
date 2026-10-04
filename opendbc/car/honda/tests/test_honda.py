@@ -9,7 +9,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_G
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
                                              ODYSSEY_ZERO_GAS_GRADE_GAIN,
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
-                                             ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS,
+                                             ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_SLEW_COUNTS,
                                              ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_STEER_ERROR_FRAMES,
                                              ODYSSEY_UPHILL_GAS_ACCEL_MAX, CarController, OdysseyBrakeRelease,
                                              OdysseySteeringAuthority,
@@ -354,7 +354,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       self.assertEqual(capped.update(0.95, 0.65, 0.04, 19.0, 1, True, 1.0), 0.0)
     self.assertGreater(capped.update(0.95, 0.65, 0.04, 19.0, 1, True, 1.0), 0.0)
 
-  def test_gas_response_waits_for_vehicle_delay_and_corrects_both_directions(self):
+  def test_gas_response_waits_for_vehicle_delay_before_adding_gas(self):
     response = OdysseyGasResponse()
 
     def update(request=0.0, aego=-0.3, pitch=0.06, gear=1, eligible=True):
@@ -379,6 +379,27 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
       self.assertEqual(update(gear=2), 0.0)
     self.assertGreater(update(gear=2), 0.0)
+
+  def test_gas_response_reduces_startup_overacceleration_without_adding_gas(self):
+    response = OdysseyGasResponse()
+    for _ in range(15):
+      self.assertEqual(response.update(0.02, -0.15, -0.03, 30.0, 1, True), 0.0)
+    for _ in range(5):
+      previous = response.correction
+      correction = response.update(-0.02, 0.15, -0.03, 30.0, 1, True)
+      self.assertLess(correction, 0.0)
+      self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+      self.assertLessEqual(abs(correction), ODYSSEY_RESPONSE_MAX_COUNTS)
+    previous = response.correction
+    self.assertGreater(response.update(0.04, 1.0, -0.03, 30.0, 1, True), previous)
+    self.assertEqual(response.update(-0.02, 0.15, -0.03, 30.0, 1, False), 0.0)
+    self.assertFalse(response.requests)
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES - 1):
+      previous = response.correction
+      correction = response.update(0.02, 1.0, -0.03, 30.0, 1, True, cap_weight=1.0)
+      self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+      self.assertLessEqual(abs(correction), ODYSSEY_RESPONSE_MAX_COUNTS)
+    self.assertEqual(correction, -ODYSSEY_RESPONSE_MAX_COUNTS)
 
   def test_gas_response_rejects_falling_grade_and_stale_lead_request(self):
     response = OdysseyGasResponse()
