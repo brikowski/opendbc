@@ -563,13 +563,67 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertFalse(response.update(48, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
     self.assertFalse(response.requests)
 
-  def test_downhill_gas_release_does_not_act_uphill_or_without_prior_gas(self):
+  def test_downhill_coast_requires_learned_response_or_prior_gas(self):
     response = OdysseyGasCoastRelease()
     for frame in range(0, 20, 2):
       response.update(frame, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True)
     self.assertFalse(response.update(20, -0.15, 0.30, 25.0, 0.03, 9, 0.09, True, True))
-    self.assertFalse(response.update(22, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
+    self.assertFalse(response.update(22, -0.15, 0.30, 25.0, -0.03, 9, None, False, True))
+    self.assertTrue(response.update(23, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
     self.assertFalse(response.update(24, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
+
+  def test_downhill_coast_follows_positive_demand_and_measured_response(self):
+    for request, aego, passive in ((0.35, 0.60, 0.30), (0.05, 0.06, 0.30), (0.05, 0.60, 0.0)):
+      response = OdysseyGasCoastRelease()
+      self.assertTrue(response.update(0, 0.05, 0.60, 20.0, -0.04, 7, 0.30, True, True))
+      self.assertEqual(odyssey_command_domains(0.05, 20.0, previous_gas=True, release_gas=True), (False, False))
+      self.assertFalse(response.update(2, request, aego, 20.0, -0.04, 7, passive, False, True))
+      self.assertEqual(odyssey_command_domains(request, 20.0, release_gas=response.active), (True, False))
+    for passive in (None, float("inf"), float("-inf"), float("nan")):
+      response = OdysseyGasCoastRelease()
+      self.assertFalse(response.update(0, 0.05, 0.60, 20.0, -0.04, 7, passive, True, True, True))
+
+  def test_learned_coast_does_not_pre_activate_gas_below_passive_acceleration(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    CI = CarInterface(CP.copy())
+    CI.update([])
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    controller = CarController({Bus.pt: dbc}, CP)
+    for frame in range(0, 102, 2):
+      controller.odyssey_coast_response.update(frame, 7, 0.0, -0.1, True, True)
+    controller.frame = 102
+    controller.odyssey_pitch.x = -0.04
+    CI.CS.out = structs.CarState(vEgo=20.0, vEgoRaw=20.0, aEgo=0.30, canValid=True)
+    CI.CS.odyssey_target_gear = 7
+    CI.CS.odyssey_engine_torque_estimate = -100.0
+    CI.CS.odyssey_car_gas = 0.0
+    control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0.0, -0.04, 0.0],
+                                 actuators=structs.CarControl.Actuators(accel=0.05, longControlState=structs.CarControl.Actuators.LongControlState.pid))
+    parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+    seen = 0
+    for frame in range(6):
+      now = 1_000_000_000 + frame * 10_000_000
+      CI.CS.odyssey_engine_torque_ts_nanos = now - 5_000_000
+      CI.CS.odyssey_target_gear_ts_nanos = now - 5_000_000
+      _, sends = controller.update(control.as_reader(), CI.CS, now)
+      if any(addr == 0x1DF for addr, _, _ in sends):
+        parser.update([(now, sends)])
+        self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+        self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], 0.05)
+        seen += 1
+    self.assertEqual(seen, 3)
+    for frame in range(4):
+      now = 1_100_000_000 + frame * 10_000_000
+      CI.CS.out.canValid = frame >= 2
+      CI.CS.odyssey_engine_torque_ts_nanos = now - 5_000_000
+      CI.CS.odyssey_target_gear_ts_nanos = now - (60_000_000 if frame >= 2 else 5_000_000)
+      _, sends = controller.update(control.as_reader(), CI.CS, now)
+      if any(addr == 0x1DF for addr, _, _ in sends):
+        parser.update([(now, sends)])
+        self.assertGreater(parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+        self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], 0.05)
 
   def test_downhill_gas_floor_releases_without_coast_history_only_on_falling_request(self):
     def run(gas_floor, pitch=-0.04, aego=0.4, request=-0.12):

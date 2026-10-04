@@ -82,7 +82,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
     brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0 and not release_brake)
   else:
     brake_selected = accel <= 0.0
-  if release_gas and accel < 0.0:
+  if release_gas:
     gas_selected = False
   # A positive request must release the brake domain immediately so the two commands remain
   # mutually exclusive, matching the stateful brake-permit behavior used by other OEM ports.
@@ -294,7 +294,8 @@ class OdysseyGasCoastRelease:
 
   def update(self, frame, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False):
     if (not eligible or not 1 <= gear <= 10 or
-        not all(math.isfinite(v) for v in (request, aego, speed, pitch))):
+        not all(math.isfinite(v) for v in (request, aego, speed, pitch)) or
+        (passive_accel is not None and not math.isfinite(passive_accel))):
       self.reset()
       return False
     if gear != self.gear:
@@ -305,18 +306,19 @@ class OdysseyGasCoastRelease:
     request_slope = (request - prior) / 0.2 if prior is not None else 0.0
 
     downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
-    if (request >= 0.0 or request <= ODYSSEY_ROAD_BRAKE_ENTRY or
+    if (request <= ODYSSEY_ROAD_BRAKE_ENTRY or
+        (request >= 0.0 and passive_accel is None) or
+        (passive_accel is not None and passive_accel - request < 0.05) or
         not 8.0 <= speed <= 35.0 or downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY or
         aego - request < 0.05):
       self.active = False
-    if (not self.active and previous_gas and 8.0 <= speed <= 35.0 and
-        ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and
+    if (not self.active and (previous_gas or passive_accel is not None) and 8.0 <= speed <= 35.0 and
+        ODYSSEY_ROAD_BRAKE_ENTRY < request and
         downhill_gravity > ODYSSEY_COAST_RELEASE_GRAVITY and
         aego - request > ODYSSEY_COAST_RELEASE_ERROR and
         # With no coast history, release only after bounded gas feedback has reached the zero floor.
         ((passive_accel is not None and passive_accel - request > ODYSSEY_COAST_RELEASE_ERROR) or
-         (passive_accel is None and gas_floor)) and
-        request_slope < -0.20):
+         (passive_accel is None and request < 0.0 and gas_floor and request_slope < -0.20))):
       self.active = True
     return self.active
 
@@ -558,7 +560,9 @@ class CarController(CarControllerBase):
             release_gas = self.odyssey_gas_coast_release.update(
               self.frame, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
-              coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0,
+              coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0 and
+              CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
+              0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000,
               self.gas + self.odyssey_gas_response.correction <= 0.0)
             release_brake = self.odyssey_brake_release.update(
               now_nanos, accel, CS.out.aEgo, CS.odyssey_computer_braking, CS.odyssey_computer_braking_ts_nanos,
