@@ -184,7 +184,8 @@ class OdysseyGasResponse:
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
   def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0):
-    if not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, cap_weight, response_weight)):
+    if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, response_weight)) or
+        not 1 <= gear <= 10):
       self.reset()
       return 0.0
 
@@ -600,6 +601,8 @@ class CarController(CarControllerBase):
                                  not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
                                  actuators.longControlState == LongCtrlState.pid and
                                  not CS.out.gasPressed and not CS.out.brakePressed and
+                                 CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
+                                 0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
                                  CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and self.gas > 0.0)
             response_weight = 1.0
             if CS.out.vEgo < 8.0:
@@ -607,7 +610,7 @@ class CarController(CarControllerBase):
               gas_max_accel = self.params.BOSCH_GAS_LOOKUP_BP[-1]
               response_weight = float(np.clip((0.75 * gas_max_accel - accel) / (0.25 * gas_max_accel), 0.0, 1.0))
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
-                                                            CS.out.vEgo, CS.out.gearShifter, feedback_eligible,
+                                                            CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
                                                             cap_weight, response_weight)
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))

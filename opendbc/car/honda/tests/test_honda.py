@@ -413,6 +413,49 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       assert response.update(0.3, -0.3, 0.06, 20.0, 1, True) == 0.0
     assert response.update(-0.3, -0.3, 0.06, 20.0, 1, True) == 0.0
 
+  def test_gas_feedback_uses_fresh_received_target_gear_through_drive_shifts(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    packer = CANPacker(dbc)
+    for blocked in (None, 'missing', 'stale', 'future', 'invalid_can', 'neutral', 'reverse'):
+      with self.subTest(blocked=blocked):
+        controller = CarController({Bus.pt: dbc}, CP)
+        CS = CarState(CP)
+        parsers = CS.get_can_parsers(CP)
+        output_parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = .2
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        for frame in range(82):
+          now = 1_000_000_000 + frame * 10_000_000
+          target = 6 if frame < 80 else 7
+          stamp = now - 5_000_000
+          if frame >= 80:
+            target = 0 if blocked == 'neutral' else 13 if blocked == 'reverse' else target
+            stamp = now - 60_000_000 if blocked == 'stale' else now + 1 if blocked == 'future' else stamp
+          parsers[Bus.pt].update([(stamp, [packer.make_can_msg('GEARBOX_AUTO', 1,
+                                     {'TRANS_TARGET_GEAR': target, 'GEAR_SHIFTER': 4})])])
+          state = CS.update(parsers)
+          state.vEgo = 20.
+          state.aEgo = 0.
+          state.canValid = not (frame >= 80 and blocked == 'invalid_can')
+          CS.out = state
+          if frame >= 80 and blocked == 'missing':
+            CS.odyssey_target_gear_ts_nanos = 0
+          _, sends = controller.update(control.as_reader(), CS, now)
+          output_parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          self.assertEqual(str(state.gearShifter), 'drive')
+          self.assertAlmostEqual(output_parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], .2, delta=.01)
+          self.assertEqual(output_parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertGreater(output_parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
+          if frame == 78:
+            self.assertGreater(controller.odyssey_gas_response.correction, 0)
+            self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+          if frame >= 80:
+            self.assertEqual(len(controller.odyssey_gas_response.requests), 1 if blocked is None else 0)
+            if blocked is not None:
+              self.assertEqual(controller.odyssey_gas_response.correction, 0)
+
   def test_odyssey_low_speed_feedback_is_bounded_and_survives_speed_entry(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
@@ -429,12 +472,14 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       state = structs.CarState()
       state.vEgo = speed
       state.aEgo = achieved
+      state.canValid = True
       CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                            odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
                            odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=3,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
       def step(frame):
+        CS.odyssey_target_gear_ts_nanos = frame * 10_000_000
         _, sends = controller.update(control.as_reader(), CS, frame * 10_000_000)
         messages = [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1]
         if messages:
@@ -539,6 +584,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state = structs.CarState()
     state.vEgo = 21.0
     state.aEgo = 0.5
+    state.canValid = True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=50.0, odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7,
@@ -548,6 +594,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       control.longActive = frame >= 100
       control.actuators.accel = 0.1 if frame < 220 else max(-0.14, 0.1 - (frame - 220) * 0.008)
       CS.odyssey_engine_torque_ts_nanos = frame * 10_000_000
+      CS.odyssey_target_gear_ts_nanos = frame * 10_000_000
       _, sends = controller.update(control.as_reader(), CS, frame * 10_000_000)
       messages = [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1]
       if messages:

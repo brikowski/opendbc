@@ -53,6 +53,7 @@ class CarState(CarStateBase):
     self.odyssey_car_gas = np.nan
     self.odyssey_engine_torque_ts_nanos = 0
     self.odyssey_target_gear = 0
+    self.odyssey_target_gear_ts_nanos = 0
     self.odyssey_computer_braking = False
     self.odyssey_computer_braking_ts_nanos = 0
 
@@ -170,6 +171,7 @@ class CarState(CarStateBase):
       self.odyssey_car_gas = gas_msg["CAR_GAS"]
       self.odyssey_engine_torque_ts_nanos = cp.ts_nanos["GAS_PEDAL_2"]["ENGINE_TORQUE_ESTIMATE"]
       self.odyssey_target_gear = cp.vl["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"]
+      self.odyssey_target_gear_ts_nanos = cp.ts_nanos["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"]
       self.odyssey_computer_braking = bool(cp.vl["VSA_STATUS"]["COMPUTER_BRAKING"])
       self.odyssey_computer_braking_ts_nanos = cp.ts_nanos["VSA_STATUS"]["COMPUTER_BRAKING"]
 
