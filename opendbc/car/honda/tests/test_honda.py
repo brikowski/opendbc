@@ -535,6 +535,18 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertIsNone(response.update(104, 9, pitch, 0.0, False, False))
     self.assertFalse(response.drag)
 
+  def test_passive_coast_forecast_tracks_changed_response_without_learning_an_outlier(self):
+    response = OdysseyCoastResponse()
+    for frame in range(0, 100, 2):
+      response.update(frame, 7, 0.0, -0.15, True, True)
+    self.assertAlmostEqual(response.update(100, 7, 0.0, 0.30, True, True), -0.15)
+    for frame in range(102, 140, 2):
+      response.update(frame, 7, 0.0, 0.30, True, True)
+    self.assertAlmostEqual(response.update(140, 7, 0.0, 3.0, True, True), 0.30)
+    self.assertAlmostEqual(response.update(142, 7, 0.0, 0.30, True, True), 0.30)
+    for frame in range(144, 210, 2):
+      self.assertAlmostEqual(response.update(frame, 7, 0.0, -3.0, False, True), 0.30)
+
   def test_downhill_gas_release_requires_response_and_preserves_brake_authority(self):
     response = OdysseyGasCoastRelease()
     for frame in range(0, 20, 2):

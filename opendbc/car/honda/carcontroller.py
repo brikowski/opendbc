@@ -275,13 +275,10 @@ class OdysseyCoastResponse:
         self.coast_start = frame
       if frame - self.coast_start >= 50 and frame % 10 == 0:
         residual = aego - gravity
-        if gear not in self.drag:
-          samples = self.warmup.setdefault(gear, deque(maxlen=5))
-          samples.append(residual)
-          if len(samples) == samples.maxlen:
-            self.drag[gear] = float(np.median(samples))
-        else:
-          self.drag[gear] += (0.1 / 20.1) * float(np.clip(residual - self.drag[gear], -0.3, 0.3))
+        samples = self.warmup.setdefault(gear, deque(maxlen=5))
+        samples.append(residual)
+        if len(samples) == samples.maxlen:
+          self.drag[gear] = float(np.median(samples))
     return forecast
 
 
