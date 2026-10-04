@@ -30,8 +30,7 @@ ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
 ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
 ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
-ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS = 200_000_000
-ODYSSEY_BRAKE_RELEASE_TORQUE_DROP = 40.0
+ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS = 200_000_000
 ODYSSEY_COAST_RELEASE_GRAVITY = 0.25
 ODYSSEY_COAST_RELEASE_ERROR = 0.20
 # Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
@@ -220,7 +219,7 @@ class OdysseyGasResponse:
 
 
 class OdysseyBrakeRelease:
-  """Release mild braking when falling engine torque confirms an already-strong deceleration."""
+  """Release easing brake requests when fresh brake feedback confirms excessive deceleration."""
   def __init__(self):
     self.samples = deque(maxlen=32)
     self.gear = None
@@ -229,22 +228,22 @@ class OdysseyBrakeRelease:
     self.samples.clear()
     self.gear = None
 
-  def update(self, now_nanos, request, aego, torque, torque_ts_nanos, car_gas, gear, eligible):
-    if (not eligible or not all(math.isfinite(v) for v in (request, aego, torque, car_gas, gear)) or
-        not 1 <= gear <= 10 or abs(torque) > 1000 or car_gas != 0 or
-        torque_ts_nanos <= 0 or not 0 <= now_nanos - torque_ts_nanos < 60_000_000):
+  def update(self, now_nanos, request, aego, braking, braking_ts_nanos, car_gas, gear, eligible):
+    if (not eligible or not all(math.isfinite(v) for v in (request, aego, car_gas, gear)) or
+        not 1 <= gear <= 10 or car_gas != 0 or
+        braking_ts_nanos <= 0 or not 0 <= now_nanos - braking_ts_nanos < 60_000_000):
       self.reset()
       return False
     if (self.gear is not None and gear != self.gear) or (self.samples and not 0 < now_nanos - self.samples[-1][0] < 40_000_000):
       self.reset()
     self.gear = gear
-    self.samples.append((now_nanos, request, torque))
+    self.samples.append((now_nanos, request))
     prior = next((sample for sample in reversed(self.samples)
-                  if sample[0] <= now_nanos - ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS), None)
-    if prior is None or now_nanos - prior[0] > ODYSSEY_BRAKE_RELEASE_TORQUE_LOOKBACK_NS + 40_000_000:
+                  if sample[0] <= now_nanos - ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS), None)
+    if prior is None or now_nanos - prior[0] > ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS + 40_000_000:
       return False
-    return (ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
-            request - prior[1] > 0.05 and torque - prior[2] < -ODYSSEY_BRAKE_RELEASE_TORQUE_DROP)
+    return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
+            request - prior[1] > 0.05)
 
 
 class OdysseyCoastResponse:
@@ -564,10 +563,12 @@ class CarController(CarControllerBase):
               coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0,
               self.gas + self.odyssey_gas_response.correction <= 0.0)
             release_brake = self.odyssey_brake_release.update(
-              now_nanos, accel, CS.out.aEgo, CS.odyssey_engine_torque_estimate, CS.odyssey_engine_torque_ts_nanos,
+              now_nanos, accel, CS.out.aEgo, CS.odyssey_computer_braking, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
-              CC.longActive and self.odyssey_brake_selected and actuators.longControlState == LongCtrlState.pid and
-              not CS.out.gasPressed and not CS.out.brakePressed and CS.out.vEgo >= 8.0)
+              CC.longActive and self.odyssey_brake_selected and CS.out.canValid and actuators.longControlState == LongCtrlState.pid and
+              not CS.out.gasPressed and not CS.out.brakePressed and CS.out.vEgo >= 8.0 and
+              CS.odyssey_engine_torque_ts_nanos > 0 and
+              0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
             gas_accel = accel
             cap_weight = 0.0
             bridge_weight = 0.0
