@@ -220,7 +220,7 @@ class OdysseyGasResponse:
 
 
 class OdysseyBrakeRelease:
-  """Release easing brake requests when fresh brake feedback confirms excessive deceleration."""
+  """Release easing brake requests when fresh feedback and available coast response permit."""
   def __init__(self):
     self.samples = deque(maxlen=32)
     self.gear = None
@@ -229,7 +229,7 @@ class OdysseyBrakeRelease:
     self.samples.clear()
     self.gear = None
 
-  def update(self, now_nanos, request, aego, braking, braking_ts_nanos, car_gas, gear, eligible):
+  def update(self, now_nanos, request, aego, braking, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None):
     if (not eligible or not all(math.isfinite(v) for v in (request, aego, car_gas, gear)) or
         not 1 <= gear <= 10 or car_gas != 0 or
         braking_ts_nanos <= 0 or not 0 <= now_nanos - braking_ts_nanos < 60_000_000):
@@ -244,7 +244,8 @@ class OdysseyBrakeRelease:
     if prior is None or now_nanos - prior[0] > ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS + 40_000_000:
       return False
     return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
-            request - prior[1] > 0.05)
+            request - prior[1] > 0.05 and
+            (passive_accel is None or passive_accel <= request + ODYSSEY_COAST_RELEASE_ERROR))
 
 
 class OdysseyCoastResponse:
@@ -573,7 +574,9 @@ class CarController(CarControllerBase):
               CC.longActive and self.odyssey_brake_selected and CS.out.canValid and actuators.longControlState == LongCtrlState.pid and
               not CS.out.gasPressed and not CS.out.brakePressed and CS.out.vEgo >= 8.0 and
               CS.odyssey_engine_torque_ts_nanos > 0 and
-              0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
+              0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000,
+              passive_accel if (passive_accel is not None and CS.odyssey_target_gear_ts_nanos > 0 and
+                                0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000) else None)
             gas_accel = accel
             cap_weight = 0.0
             bridge_weight = 0.0

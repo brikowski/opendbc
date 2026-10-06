@@ -974,7 +974,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7,
-                             odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
+                         odyssey_target_gear_ts_nanos=0,
+                         odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
     parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
 
     def step():
@@ -1020,6 +1021,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
                              odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_target_gear=7,
+                             odyssey_target_gear_ts_nanos=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
         if blocked == 'settling':
           controller.odyssey_coast_response.coast_start = 98
@@ -1093,7 +1095,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     dbc = DBC[CP.carFingerprint][Bus.pt]
     packer = CANPacker(dbc)
     for blocked in (None, 'no_brake', 'stale_brake', 'stale_gas', 'invalid_can', 'gas_pedal',
-                    'brake_pedal', 'stopping', 'low_speed', 'strong'):
+                    'brake_pedal', 'stopping', 'low_speed', 'strong', 'coast_shortfall',
+                    'coast_sufficient', 'stale_gear', 'missing_gear', 'future_gear', 'invalid_pose'):
       with self.subTest(blocked=blocked):
         controller = CarController({Bus.pt: dbc}, CP)
         CS = CarState(CP)
@@ -1102,6 +1105,14 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         CS.out = structs.CarState(vEgo=7.5 if blocked == 'low_speed' else 20., canValid=blocked != 'invalid_can',
                                   gasPressed=blocked == 'gas_pedal', brakePressed=blocked == 'brake_pedal')
         control = structs.CarControl(longActive=True, enabled=True)
+        forecast_case = blocked in ('coast_shortfall', 'coast_sufficient', 'stale_gear', 'missing_gear',
+                                   'future_gear', 'invalid_pose')
+        if forecast_case:
+          control.orientationNED = [] if blocked == 'invalid_pose' else [0., -.04, 0.]
+          controller.odyssey_pitch.x = -.04
+          controller.odyssey_coast_response.gear = 6
+          passive_accel = -.5 if blocked == 'coast_sufficient' else .3
+          controller.odyssey_coast_response.drag[6] = passive_accel + ACCELERATION_DUE_TO_GRAVITY * math.sin(-.04)
         control.actuators.longControlState = (structs.CarControl.Actuators.LongControlState.stopping if blocked == 'stopping'
                                               else structs.CarControl.Actuators.LongControlState.pid)
         output_parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
@@ -1112,20 +1123,32 @@ class TestOdysseyLongitudinal(unittest.TestCase):
                      ('GEARBOX_AUTO', {'TRANS_TARGET_GEAR': 6})]
           for name, values in signals:
             if frame > 0 and ((blocked == 'stale_brake' and name == 'VSA_STATUS') or
-                              (blocked == 'stale_gas' and name == 'GAS_PEDAL_2')):
+                              (blocked == 'stale_gas' and name == 'GAS_PEDAL_2') or
+                              (blocked == 'stale_gear' and name == 'GEARBOX_AUTO')):
               continue
             parsers[Bus.pt].update([(now - 5_000_000, [packer.make_can_msg(name, 1, values)])])
           CS.update(parsers)
+          if blocked in ('missing_gear', 'future_gear'):
+            CS.odyssey_target_gear_ts_nanos = 0 if blocked == 'missing_gear' else now + 1
           control.actuators.accel = -.4 if blocked == 'strong' else -.28 + frame * .004
           CS.out.aEgo = control.actuators.accel - .3
           if frame == 0:
             controller.odyssey_brake_selected = True
           _, sends = controller.update(control.as_reader(), CS, now)
           output_parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
-        self.assertEqual(output_parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked is not None)
+        retain_brake = blocked not in (None, 'coast_sufficient', 'stale_gear', 'missing_gear', 'future_gear', 'invalid_pose')
+        self.assertEqual(output_parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], retain_brake)
         self.assertEqual(output_parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
         if blocked is None:
           self.assertAlmostEqual(output_parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
+        if blocked == 'coast_shortfall':
+          for request in (0., .1):
+            control.actuators.accel = request
+            for _ in range(2):
+              now += 10_000_000
+              _, sends = controller.update(control.as_reader(), CS, now)
+              output_parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+            self.assertEqual(output_parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
 
   def test_uphill_negative_gas_demand_delays_only_an_active_gas_release(self):
     gas_accel = odyssey_uphill_gas_accel_with_cap(-0.23, 0.03)[0]
