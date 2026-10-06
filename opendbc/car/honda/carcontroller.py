@@ -423,6 +423,7 @@ class CarController(CarControllerBase):
     self.odyssey_steering_authority = (OdysseySteeringAuthority(self.params.STEER_MAX / CP.lateralTuning.torque.latAccelFactor)
                                        if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else None)
     self.odyssey_brake_selected = False
+    self.odyssey_brake_start_frame = None
     self.odyssey_gas_selected = False
     self.odyssey_gas_bridge_active = False
     self.odyssey_gas_response = OdysseyGasResponse()
@@ -451,6 +452,7 @@ class CarController(CarControllerBase):
       accel = 0.0
       gas, brake = 0.0, 0.0
       self.odyssey_brake_selected = False
+      self.odyssey_brake_start_frame = None
       self.odyssey_gas_selected = False
       self.odyssey_gas_bridge_active = False
       self.odyssey_gas_response.reset()
@@ -588,6 +590,9 @@ class CarController(CarControllerBase):
             settled_coast = (coast_eligible and not previous_gas and not self.odyssey_brake_selected and
                              coast_start is not None and self.frame - coast_start >= 50 and
                              8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
+            # Inactive brake feedback cannot yet distinguish a pending command from settled coast.
+            settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
+                             self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
             passive_gas = (coast_eligible and CS.out.canValid and
                            CS.odyssey_target_gear_ts_nanos > 0 and
                            0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
@@ -599,7 +604,7 @@ class CarController(CarControllerBase):
                            ((previous_gas and CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR) or
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
-                             (settled_coast or self.odyssey_brake_selected))))
+                             (settled_coast or settled_brake))))
             gas_selected |= passive_gas
             brake_selected &= not passive_gas
             if passive_gas:
@@ -607,6 +612,10 @@ class CarController(CarControllerBase):
             if (settled_coast and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
                 CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
               gas_selected, brake_selected = False, True
+            if brake_selected and not self.odyssey_brake_selected:
+              self.odyssey_brake_start_frame = self.frame
+            elif not brake_selected:
+              self.odyssey_brake_start_frame = None
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:
