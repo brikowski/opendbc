@@ -556,7 +556,8 @@ class CarController(CarControllerBase):
                               0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
             passive_accel = self.odyssey_coast_response.update(
               self.frame, CS.odyssey_target_gear, self.odyssey_pitch.x, CS.out.aEgo,
-              not previous_gas and not self.odyssey_brake_selected, coast_eligible)
+              not previous_gas and not self.odyssey_brake_selected and CS.odyssey_car_gas == 0.0 and
+              not CS.odyssey_computer_braking, coast_eligible)
             release_gas = self.odyssey_gas_coast_release.update(
               self.frame, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
@@ -584,16 +585,28 @@ class CarController(CarControllerBase):
                                                                     self.odyssey_gas_bridge_active,
                                                                     gas_accel, release_brake, release_gas)
             coast_start = self.odyssey_coast_response.coast_start
-            settled_coast = (coast_eligible and not gas_selected and not brake_selected and not previous_gas and
+            settled_coast = (coast_eligible and not previous_gas and not self.odyssey_brake_selected and
                              coast_start is not None and self.frame - coast_start >= 50 and
                              8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
-            coast_gas_entry = (settled_coast and ODYSSEY_ROAD_BRAKE_ENTRY < accel and
-                               gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and
-                               passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
-                               CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR)
-            gas_selected |= coast_gas_entry
-            brake_selected |= (settled_coast and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
-                               CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR)
+            passive_gas = (coast_eligible and CS.out.canValid and
+                           CS.odyssey_target_gear_ts_nanos > 0 and
+                           0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
+                           CS.odyssey_computer_braking_ts_nanos > 0 and
+                           0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000 and
+                           8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and
+                           passive_accel is not None and passive_accel < accel and
+                           not CS.odyssey_computer_braking and
+                           ((previous_gas and CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR) or
+                            (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
+                             CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
+                             (settled_coast or self.odyssey_brake_selected))))
+            gas_selected |= passive_gas
+            brake_selected &= not passive_gas
+            if passive_gas:
+              self.odyssey_gas_bridge_active = False
+            if (settled_coast and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
+                CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
+              gas_selected, brake_selected = False, True
             self.odyssey_brake_selected = brake_selected
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:
@@ -604,7 +617,7 @@ class CarController(CarControllerBase):
                                  not CS.out.gasPressed and not CS.out.brakePressed and
                                  CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
                                  0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
-                                 CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and self.gas > 0.0)
+                                 CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and (self.gas > 0.0 or passive_gas))
             response_weight = 1.0
             if CS.out.vEgo < 8.0:
               # The gas map approaches its rail during a low-gear launch; taper feedback there.
@@ -623,9 +636,9 @@ class CarController(CarControllerBase):
               self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
             if CC.longActive and brake_selected and not CS.out.gasPressed and not CS.out.brakePressed:
               self.accel = odyssey_creep_brake_accel(self.accel, CS.out.vEgo)
-            # Settled coast under-response qualifies direct entry into mapped gas.
+            # A qualified passive-response shortfall can use gas and existing feedback at the map floor.
             self.gas, self.odyssey_gas_bridge_active = odyssey_gas_command(accel, self.gas, gas_selected,
-                                                                            previous_gas or coast_gas_entry, self.odyssey_gas_bridge_active,
+                                                                            previous_gas or passive_gas, self.odyssey_gas_bridge_active,
                                                                             bridge_weight)
             gas_domain = gas_selected
             brake_domain = brake_selected
