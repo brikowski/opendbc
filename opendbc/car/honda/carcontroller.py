@@ -596,13 +596,13 @@ class CarController(CarControllerBase):
             # Inactive brake feedback cannot yet distinguish a pending command from settled coast.
             settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
                              self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
-            passive_gas = (coast_eligible and CS.out.canValid and
-                           CS.odyssey_target_gear_ts_nanos > 0 and
-                           0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
-                           CS.odyssey_computer_braking_ts_nanos > 0 and
-                           0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000 and
-                           8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and
-                           passive_accel is not None and passive_accel < accel and
+            passive_response_eligible = (coast_eligible and CS.out.canValid and
+                                         CS.odyssey_target_gear_ts_nanos > 0 and
+                                         0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
+                                         CS.odyssey_computer_braking_ts_nanos > 0 and
+                                         0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000 and
+                                         8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
+            passive_gas = (passive_response_eligible and passive_accel < accel and
                            not CS.odyssey_computer_braking and
                            ((previous_gas and CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR) or
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
@@ -612,7 +612,9 @@ class CarController(CarControllerBase):
             brake_selected &= not passive_gas
             if passive_gas:
               self.odyssey_gas_bridge_active = False
-            if (settled_coast and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
+            # A prior coast forecast and fresh response can establish brake need before the learning dwell.
+            if (passive_response_eligible and not previous_gas and not self.odyssey_brake_selected and
+                coast_start is not None and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
                 CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
               gas_selected, brake_selected = False, True
             if brake_selected and not self.odyssey_brake_selected:
