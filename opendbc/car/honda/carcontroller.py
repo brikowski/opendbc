@@ -166,12 +166,12 @@ def odyssey_low_speed_gas_command(gas, accel, speed):
 
 
 class OdysseyGasResponse:
-  """Compare a delayed gas-domain request with the vehicle's measured response."""
+  """Compare delayed gas requests and response within the same received drivetrain state."""
   def __init__(self):
     self.correction = 0.0
     self.requests = deque(maxlen=ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
     self.pitch_peak = None
-    self.gear = None
+    self.drivetrain = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
   def reset(self):
@@ -180,18 +180,18 @@ class OdysseyGasResponse:
   def clear_observer(self):
     self.requests.clear()
     self.pitch_peak = None
-    self.gear = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
-  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0):
+  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0, shift_activity=0):
     if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, response_weight)) or
         not 1 <= gear <= 10):
       self.reset()
       return 0.0
 
-    if (self.gear is not None and gear != self.gear) or (self.pitch_peak is not None and pitch < self.pitch_peak - 0.01):
+    drivetrain = (gear, shift_activity)
+    if drivetrain != self.drivetrain or (self.pitch_peak is not None and pitch < self.pitch_peak - 0.01):
       self.clear_observer()
-    self.gear = gear
+    self.drivetrain = drivetrain
     self.pitch_peak = pitch if self.pitch_peak is None else max(self.pitch_peak, pitch)
     self.requests.append(request)
 
@@ -637,7 +637,7 @@ class CarController(CarControllerBase):
               response_weight = float(np.clip((0.75 * gas_max_accel - accel) / (0.25 * gas_max_accel), 0.0, 1.0))
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
-                                                            cap_weight, response_weight)
+                                                            cap_weight, response_weight, CS.odyssey_shift_activity)
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
             if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:

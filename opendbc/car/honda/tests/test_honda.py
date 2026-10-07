@@ -101,7 +101,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         state.vEgo = 22.0
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
-                             odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=0,
+                             odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
         counts = []
         for frame in range(190):
@@ -145,7 +145,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         state.vEgo = speed
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
-                             odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=0,
+                             odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
         def step(frame, controller=controller, control=control, CS=CS, bus=bus, parser=parser):
@@ -218,7 +218,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           state.vEgo = 16.0
           CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                                odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
-                               odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=3,
+                               odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=3,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
           def step(pitch, control=control, controller=controller, CS=CS, parser=parser):
@@ -456,6 +456,52 @@ class TestOdysseyLongitudinal(unittest.TestCase):
             if blocked is not None:
               self.assertEqual(controller.odyssey_gas_response.correction, 0)
 
+  def test_gas_feedback_does_not_compare_across_received_transmission_activity(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for changed in (False, True):
+      with self.subTest(changed=changed):
+        packer = CANPacker(dbc)
+        CS = CarState(CP)
+        parsers = CS.get_can_parsers(CP)
+        controller = CarController({Bus.pt: dbc}, CP)
+        wire = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = .2
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        for frame in range(134):
+          now = 1_000_000_000 + frame * 10_000_000
+          activity = 110 if changed and frame >= 80 else 102
+          parsers[Bus.pt].update([(now - 5_000_000, [packer.make_can_msg('GEARBOX_AUTO', 1,
+                                     {'TRANS_TARGET_GEAR': 6, 'TRANS_SHIFT_ACTIVITY': activity, 'GEAR_SHIFTER': 4})])])
+          state = CS.update(parsers)
+          state.vEgo, state.aEgo, state.canValid = 20., 0., True
+          CS.out = state
+          if frame > 0:
+            self.assertEqual(CS.odyssey_target_gear, 6)
+            self.assertEqual(CS.odyssey_shift_activity, activity)
+            self.assertEqual(CS.odyssey_target_gear_ts_nanos, now - 5_000_000)
+          previous = controller.odyssey_gas_response.correction
+          _, sends = controller.update(control.as_reader(), CS, now)
+          if frame % 2 or frame == 0:
+            continue
+          wire.update([(now, sends)])
+          self.assertAlmostEqual(wire.vl['ACC_CONTROL']['ACCEL_COMMAND'], .2, delta=.01)
+          self.assertEqual(wire.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertGreater(wire.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
+          response = controller.odyssey_gas_response
+          self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          if frame == 78:
+            self.assertAlmostEqual(response.correction, 40., delta=1e-5)
+          if frame == 80:
+            self.assertEqual(len(response.requests), 1 if changed else ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+            self.assertAlmostEqual(response.correction, 30. if changed else 40., delta=1e-5)
+          if frame == 128 and changed:
+            self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES)
+            self.assertEqual(response.correction, 0.)
+          if frame == 130:
+            self.assertGreater(response.correction, 0.)
+
   def test_odyssey_low_speed_feedback_is_bounded_and_survives_speed_entry(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
@@ -475,7 +521,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       state.canValid = True
       CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                            odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
-                           odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=3,
+                           odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=3,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
       def step(frame):
@@ -653,7 +699,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state.canValid = True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=50.0, odyssey_car_gas=0.0,
-                         odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7,
+                         odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
     for frame in range(260):
@@ -696,7 +742,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state.canValid = True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                         odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7,
+                         odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
     def step():
@@ -755,7 +801,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         state.canValid = True
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                             odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_target_gear=7,
+                             odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=1_000_000_000,
                              odyssey_target_gear_ts_nanos=1_000_000_000)
         if blocked == 'settling':
@@ -823,7 +869,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state.vEgo, state.canValid = 22.0, True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                         odyssey_target_gear=7, odyssey_computer_braking=False)
+                         odyssey_shift_activity=0, odyssey_target_gear=7, odyssey_computer_braking=False)
     parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
     for frame in range(2 * ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
       now = 2_000_000_000 + frame * 10_000_000
@@ -879,7 +925,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         state.vEgo, state.aEgo, state.canValid = 22.0, -0.8, True
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                             odyssey_target_gear=7, odyssey_computer_braking=False)
+                             odyssey_shift_activity=0, odyssey_target_gear=7, odyssey_computer_braking=False)
         parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
         safety = libsafety_py.libsafety
         config = CP.safetyConfigs[-1]
@@ -950,7 +996,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state.vEgo, state.aEgo, state.canValid = 22.0, 0.3, True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                         odyssey_engine_torque_ts_nanos=1_990_000_000, odyssey_target_gear=7,
+                         odyssey_engine_torque_ts_nanos=1_990_000_000, odyssey_shift_activity=0, odyssey_target_gear=7,
                          odyssey_target_gear_ts_nanos=1_990_000_000,
                          odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=1_990_000_000)
     _, sends = controller.update(control.as_reader(), CS, 2_000_000_000)
@@ -973,7 +1019,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state.vEgo, state.aEgo = 20.0, 0.3
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                          odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                         odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7,
+                         odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                          odyssey_target_gear_ts_nanos=0,
                          odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
     parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
@@ -1020,7 +1066,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         state.vEgo, state.aEgo = 20.0, 0.3
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
-                             odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_target_gear=7,
+                             odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_target_gear_ts_nanos=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
         if blocked == 'settling':
