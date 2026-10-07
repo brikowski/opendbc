@@ -50,7 +50,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
     for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
       self.assertEqual(authority.limit(3500, curvature, current, 31.0, True, 3840), 2560)
     self.assertGreater(authority.limit(3500, curvature, current, 31.0, True, 3840), 2560)
-    self.assertEqual(authority.limit(3500, curvature, current, 19.9, True, 3840), 2560)
+    self.assertEqual(authority.limit(3500, curvature, current, 14.9, True, 3840), 2560)
     lower_curvature = 1.8 / 22.0**2
     lower_current = lower_curvature - 0.3 / 22.0**2
     for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
@@ -61,6 +61,20 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
     self.assertEqual(authority.limit(3500, -curvature, -current, 31.0, True, 3840), 2560)
     self.assertEqual(authority.limit(3500, curvature, curvature, 31.0, True, 3840), 2560)
     self.assertEqual(authority.limit(2000, curvature, current, 31.0, True, 3840), 2000)
+
+  def test_steering_authority_speed_scope(self):
+    for direction in (-1, 1):
+      for speed in (8.5, 14.9, 15.0, 16.5, 19.9, 20.0, 33.0, 33.1):
+        with self.subTest(direction=direction, speed=speed):
+          authority = OdysseySteeringAuthority(3840 / 1.35)
+          curvature = direction * 1.5 / speed**2
+          current = curvature - direction * 0.4 / speed**2
+          for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+            output = authority.limit(direction * 3500, curvature, current, speed, True, 3840)
+          if 15.0 <= speed <= 33.0:
+            self.assertGreater(abs(output), 2560)
+          else:
+            self.assertEqual(abs(output), 2560)
 
   def test_extra_range_does_not_withdraw_on_growing_turn_demand(self):
     for direction in (-1, 1):
@@ -129,7 +143,8 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         self.assertLessEqual(max(abs(b - a) for a, b in zip(counts, counts[1:], strict=False)), 77)
 
   def test_steering_wire_and_output_follow_bounded_authority_in_both_bus_modes(self):
-    for alpha_long, bus, speed in ((True, 1, 31.0), (False, 0, 31.0), (True, 1, 22.0), (False, 0, 22.0)):
+    for alpha_long, bus, speed in ((True, 1, 31.0), (False, 0, 31.0), (True, 1, 22.0), (False, 0, 22.0),
+                                  (True, 1, 16.5), (False, 0, 16.5)):
       with self.subTest(alpha_long=alpha_long, speed=speed):
         CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], alpha_long, False, False)
         dbc = DBC[CP.carFingerprint][Bus.pt]

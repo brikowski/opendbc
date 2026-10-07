@@ -52,7 +52,7 @@ class OdysseySteeringAuthority:
     desired_accel = curvature * speed * speed
     error = (curvature - current_curvature) * speed * speed
     direction = int(np.sign(requested))
-    qualified = (eligible and 20.0 <= speed <= 33.0 and
+    qualified = (eligible and 15.0 <= speed <= 33.0 and
                  abs(requested) >= ODYSSEY_LKA_STEER_MAX and
                  desired_accel * direction > 0.0 and
                  error * direction > ODYSSEY_STEER_ERROR_MIN and
