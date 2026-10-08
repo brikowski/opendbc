@@ -139,7 +139,8 @@ def odyssey_brake_accel(accel, pitch):
   if accel >= 0.0:
     return accel
   grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
-  return min(accel + grade_accel, 0.0)
+  # Bound downhill feedforward by requested deceleration so it vanishes at release.
+  return min(accel + max(grade_accel, accel), 0.0)
 
 
 def odyssey_creep_brake_accel(accel, speed):

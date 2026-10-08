@@ -1359,6 +1359,16 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_brake_accel(-0.1, 0.2), 0.0)
     self.assertEqual(odyssey_brake_accel(0.1, pitch), 0.1)
 
+  def test_light_downhill_braking_cannot_be_dominated_by_grade_compensation(self):
+    for request in (-0.20, -0.10, -0.05, -0.001):
+      with self.subTest(request=request):
+        command = odyssey_brake_accel(request, -0.05)
+        self.assertGreaterEqual(command, 2 * request)
+        self.assertLessEqual(command, request)
+    self.assertAlmostEqual(odyssey_brake_accel(-0.5, -0.05), -0.5 - 0.3 * ACCELERATION_DUE_TO_GRAVITY * math.sin(0.05))
+    self.assertEqual(odyssey_brake_accel(0.0, -0.05), 0.0)
+    self.assertEqual(odyssey_brake_accel(0.01, -0.05), 0.01)
+
   def test_negative_gas_bridge_preserves_existing_domain_lifecycle(self):
     gas, active = odyssey_gas_command(-0.10, 91.0, True, False, False)
     self.assertEqual((gas, active), (ODYSSEY_GAS_BRIDGE_COMMAND, True))
