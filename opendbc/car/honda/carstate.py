@@ -49,7 +49,6 @@ class CarState(CarStateBase):
     self.dash_speed_seen = False
     self.is_metric = False
     self.v_cruise_factor = 1.
-    self.odyssey_engine_torque_estimate = np.nan
     self.odyssey_car_gas = np.nan
     self.odyssey_engine_torque_ts_nanos = 0
     self.odyssey_target_gear = 0
@@ -168,7 +167,6 @@ class CarState(CarStateBase):
 
     if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
       gas_msg = cp.vl["GAS_PEDAL_2"]
-      self.odyssey_engine_torque_estimate = gas_msg["ENGINE_TORQUE_ESTIMATE"]
       self.odyssey_car_gas = gas_msg["CAR_GAS"]
       self.odyssey_engine_torque_ts_nanos = cp.ts_nanos["GAS_PEDAL_2"]["ENGINE_TORQUE_ESTIMATE"]
       self.odyssey_target_gear = cp.vl["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"]

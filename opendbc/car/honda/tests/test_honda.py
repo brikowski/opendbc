@@ -116,7 +116,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         state = structs.CarState()
         state.vEgo = 22.0
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                             odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
+                             odyssey_car_gas=math.nan,
                              odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
         counts = []
@@ -161,7 +161,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         state = structs.CarState()
         state.vEgo = speed
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                             odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
+                             odyssey_car_gas=math.nan,
                              odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
@@ -234,7 +234,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           state = structs.CarState()
           state.vEgo = 16.0
           CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                               odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
+                               odyssey_car_gas=math.nan,
                                odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=3,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
@@ -537,7 +537,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       state.aEgo = achieved
       state.canValid = True
       CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                           odyssey_engine_torque_estimate=math.nan, odyssey_car_gas=math.nan,
+                           odyssey_car_gas=math.nan,
                            odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=3,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
@@ -682,7 +682,6 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     controller.odyssey_pitch.x = -0.04
     CI.CS.out = structs.CarState(vEgo=20.0, vEgoRaw=20.0, aEgo=0.30, canValid=True)
     CI.CS.odyssey_target_gear = 7
-    CI.CS.odyssey_engine_torque_estimate = -100.0
     CI.CS.odyssey_car_gas = 0.0
     control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0.0, -0.04, 0.0],
                                  actuators=structs.CarControl.Actuators(accel=0.05, longControlState=structs.CarControl.Actuators.LongControlState.pid))
@@ -754,7 +753,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     state.aEgo = 0.5
     state.canValid = True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                         odyssey_engine_torque_estimate=50.0, odyssey_car_gas=0.0,
+                         odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
@@ -797,7 +796,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     state.vEgo, state.aEgo = 21.0, -0.45
     state.canValid = True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                         odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                         odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
@@ -857,7 +856,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         state.vEgo, state.aEgo = 21.0, -0.45
         state.canValid = True
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                             odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                             odyssey_car_gas=0.0,
                              odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=1_000_000_000,
                              odyssey_target_gear_ts_nanos=1_000_000_000)
@@ -925,7 +924,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     state = structs.CarState()
     state.vEgo, state.canValid = 22.0, True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                         odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                         odyssey_car_gas=0.0,
                          odyssey_shift_activity=0, odyssey_target_gear=7, odyssey_computer_braking=False)
     parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
     for frame in range(2 * ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
@@ -981,7 +980,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         state = structs.CarState()
         state.vEgo, state.aEgo, state.canValid = 22.0, -0.8, True
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                             odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                             odyssey_car_gas=0.0,
                              odyssey_shift_activity=0, odyssey_target_gear=7, odyssey_computer_braking=False)
         parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
         safety = libsafety_py.libsafety
@@ -1052,7 +1051,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     state = structs.CarState()
     state.vEgo, state.aEgo, state.canValid = 22.0, 0.3, True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                         odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                         odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=1_990_000_000, odyssey_shift_activity=0, odyssey_target_gear=7,
                          odyssey_target_gear_ts_nanos=1_990_000_000,
                          odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=1_990_000_000)
@@ -1075,7 +1074,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     state = structs.CarState()
     state.vEgo, state.aEgo, state.canValid = 20.0, 0.3, True
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                         odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                         odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                          odyssey_target_gear_ts_nanos=0,
                          odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
@@ -1119,7 +1118,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
     state = structs.CarState(vEgo=20.0, aEgo=0.15, canValid=True)
     CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                         odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                         odyssey_car_gas=0.0,
                          odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                          odyssey_target_gear_ts_nanos=0,
                          odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
@@ -1174,7 +1173,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
         state = structs.CarState(vEgo=20.0, aEgo=0.3, canValid=True)
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                             odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                             odyssey_car_gas=0.0,
                              odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_target_gear_ts_nanos=0,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
@@ -1225,7 +1224,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         state = structs.CarState()
         state.vEgo, state.aEgo, state.canValid = 20.0, 0.3, True
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
-                             odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                             odyssey_car_gas=0.0,
                              odyssey_engine_torque_ts_nanos=1_000_000_000, odyssey_shift_activity=0, odyssey_target_gear=7,
                              odyssey_target_gear_ts_nanos=1_000_000_000,
                              odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=1_000_000_000)
