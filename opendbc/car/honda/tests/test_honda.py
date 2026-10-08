@@ -1343,12 +1343,24 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
                                            0, 0., 6, True))
           self.assertFalse(response.samples)
 
+  def test_brake_release_requires_coast_to_supply_requested_deceleration(self):
+    for coast_error in (None, -.01, 0., .001, .1, .19):
+      with self.subTest(coast_error=coast_error):
+        response = OdysseyBrakeRelease()
+        for frame in range(12):
+          now = 1_000_000_000 + frame * 20_000_000
+          request = -.28 + frame * .008
+          passive_accel = None if coast_error is None else request + coast_error
+          release = response.update(now, request, request - .3, True, now - 5_000_000,
+                                    0., 6, True, passive_accel)
+          self.assertEqual(release, frame >= 10 and (coast_error is None or coast_error <= 0.))
+
   def test_brake_release_uses_received_braking_with_flat_engine_torque(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
     packer = CANPacker(dbc)
     for blocked in (None, 'no_brake', 'stale_brake', 'stale_gas', 'invalid_can', 'gas_pedal',
-                    'brake_pedal', 'stopping', 'low_speed', 'strong', 'coast_shortfall',
+                    'brake_pedal', 'stopping', 'low_speed', 'strong', 'coast_shortfall', 'coast_weak',
                     'coast_sufficient', 'stale_gear', 'missing_gear', 'future_gear', 'invalid_pose'):
       with self.subTest(blocked=blocked):
         controller = CarController({Bus.pt: dbc}, CP)
@@ -1358,13 +1370,13 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         CS.out = structs.CarState(vEgo=7.5 if blocked == 'low_speed' else 20., canValid=blocked != 'invalid_can',
                                   gasPressed=blocked == 'gas_pedal', brakePressed=blocked == 'brake_pedal')
         control = structs.CarControl(longActive=True, enabled=True)
-        forecast_case = blocked in ('coast_shortfall', 'coast_sufficient', 'stale_gear', 'missing_gear',
+        forecast_case = blocked in ('coast_shortfall', 'coast_weak', 'coast_sufficient', 'stale_gear', 'missing_gear',
                                    'future_gear', 'invalid_pose')
         if forecast_case:
           control.orientationNED = [] if blocked == 'invalid_pose' else [0., -.04, 0.]
           controller.odyssey_pitch.x = -.04
           controller.odyssey_coast_response.gear = 6
-          passive_accel = -.5 if blocked == 'coast_sufficient' else .3
+          passive_accel = {'coast_sufficient': -.5, 'coast_weak': 0.}.get(blocked, .3)
           controller.odyssey_coast_response.drag[6] = passive_accel + ACCELERATION_DUE_TO_GRAVITY * math.sin(-.04)
         control.actuators.longControlState = (structs.CarControl.Actuators.LongControlState.stopping if blocked == 'stopping'
                                               else structs.CarControl.Actuators.LongControlState.pid)
@@ -1394,7 +1406,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertEqual(output_parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
         if blocked is None:
           self.assertAlmostEqual(output_parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
-        if blocked == 'coast_shortfall':
+        if blocked in ('coast_shortfall', 'coast_weak'):
           for request in (0., .1):
             control.actuators.accel = request
             for _ in range(2):

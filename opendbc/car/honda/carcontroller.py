@@ -244,7 +244,7 @@ class OdysseyBrakeRelease:
       return False
     return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
             request - prior[1] > 0.05 and
-            (passive_accel is None or passive_accel <= request + ODYSSEY_COAST_RELEASE_ERROR))
+            (passive_accel is None or passive_accel <= request))
 
 
 class OdysseyCoastResponse:
