@@ -30,7 +30,7 @@ ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
 ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
 ODYSSEY_BRAKE_GRADE_GAIN = 0.3
 ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
-ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS = 200_000_000
+ODYSSEY_REQUEST_LOOKBACK_NS = 200_000_000
 ODYSSEY_COAST_RELEASE_GRAVITY = 0.25
 ODYSSEY_COAST_RELEASE_ERROR = 0.20
 # Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
@@ -241,8 +241,8 @@ class OdysseyBrakeRelease:
     self.gear = gear
     self.samples.append((now_nanos, request))
     prior = next((sample for sample in reversed(self.samples)
-                  if sample[0] <= now_nanos - ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS), None)
-    if prior is None or now_nanos - prior[0] > ODYSSEY_BRAKE_RELEASE_REQUEST_LOOKBACK_NS + 40_000_000:
+                  if sample[0] <= now_nanos - ODYSSEY_REQUEST_LOOKBACK_NS), None)
+    if prior is None or now_nanos - prior[0] > ODYSSEY_REQUEST_LOOKBACK_NS + 40_000_000:
       return False
     return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
             request - prior[1] > 0.05 and
@@ -295,7 +295,7 @@ class OdysseyGasCoastRelease:
   def reset(self):
     self.__init__()
 
-  def update(self, frame, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False):
+  def update(self, now_nanos, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False):
     if (not eligible or not 1 <= gear <= 10 or
         not all(math.isfinite(v) for v in (request, aego, speed, pitch)) or
         (passive_accel is not None and not math.isfinite(passive_accel))):
@@ -304,9 +304,9 @@ class OdysseyGasCoastRelease:
     if gear != self.gear:
       self.reset()
       self.gear = gear
-    self.requests.append((frame, request))
-    prior = next((value for old_frame, value in self.requests if old_frame <= frame - 20), None)
-    request_slope = (request - prior) / 0.2 if prior is not None else 0.0
+    self.requests.append((now_nanos, request))
+    prior = next((sample for sample in self.requests if sample[0] <= now_nanos - ODYSSEY_REQUEST_LOOKBACK_NS), None)
+    request_slope = (request - prior[1]) / ((now_nanos - prior[0]) * 1e-9) if prior is not None else 0.0
 
     downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
     if (request <= ODYSSEY_ROAD_BRAKE_ENTRY or
@@ -568,7 +568,7 @@ class CarController(CarControllerBase):
               not previous_gas and not self.odyssey_brake_selected and CS.odyssey_car_gas == 0.0 and
               not CS.odyssey_computer_braking, coast_eligible and coast_state_valid)
             release_gas = self.odyssey_gas_coast_release.update(
-              self.frame, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
+              now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
               coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0 and
               CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and

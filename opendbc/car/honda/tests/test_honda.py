@@ -619,34 +619,34 @@ class TestOdysseyLongitudinal(unittest.TestCase):
   def test_downhill_gas_release_requires_response_and_preserves_brake_authority(self):
     response = OdysseyGasCoastRelease()
     for frame in range(0, 20, 2):
-      self.assertFalse(response.update(frame, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True))
+      self.assertFalse(response.update(frame * 10_000_000, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True))
     for frame in range(20, 40, 2):
-      self.assertFalse(response.update(frame, -0.15, 0.30, 25.0, -0.03, 9, None, True, True))
-    self.assertTrue(response.update(40, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, True))
+      self.assertFalse(response.update(frame * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, None, True, True))
+    self.assertTrue(response.update(40 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, True))
     self.assertEqual(odyssey_command_domains(-0.15, 25.0, previous_gas=True, release_gas=True), (False, False))
     self.assertEqual(odyssey_command_domains(-0.40, 25.0, previous_gas=True, release_gas=True), (False, True))
     self.assertEqual(odyssey_command_domains(-0.15, 4.0, previous_gas=True, release_gas=True), (False, True))
-    self.assertTrue(response.update(42, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
-    self.assertFalse(response.update(44, -0.15, -0.11, 25.0, -0.03, 9, 0.09, False, True))
-    self.assertFalse(response.update(46, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True))
-    self.assertFalse(response.update(48, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
+    self.assertTrue(response.update(42 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
+    self.assertFalse(response.update(44 * 10_000_000, -0.15, -0.11, 25.0, -0.03, 9, 0.09, False, True))
+    self.assertFalse(response.update(46 * 10_000_000, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True))
+    self.assertFalse(response.update(48 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
     self.assertFalse(response.requests)
 
   def test_downhill_coast_requires_learned_response_or_prior_gas(self):
     response = OdysseyGasCoastRelease()
     for frame in range(0, 20, 2):
-      response.update(frame, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True)
-    self.assertFalse(response.update(20, -0.15, 0.30, 25.0, 0.03, 9, 0.09, True, True))
-    self.assertFalse(response.update(22, -0.15, 0.30, 25.0, -0.03, 9, None, False, True))
-    self.assertTrue(response.update(23, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
-    self.assertFalse(response.update(24, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
+      response.update(frame * 10_000_000, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True)
+    self.assertFalse(response.update(20 * 10_000_000, -0.15, 0.30, 25.0, 0.03, 9, 0.09, True, True))
+    self.assertFalse(response.update(22 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, None, False, True))
+    self.assertTrue(response.update(23 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
+    self.assertFalse(response.update(24 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
 
   def test_downhill_coast_follows_positive_demand_and_measured_response(self):
     for request, aego, passive in ((0.35, 0.60, 0.30), (0.05, 0.06, 0.30), (0.05, 0.60, 0.0)):
       response = OdysseyGasCoastRelease()
       self.assertTrue(response.update(0, 0.05, 0.60, 20.0, -0.04, 7, 0.30, True, True))
       self.assertEqual(odyssey_command_domains(0.05, 20.0, previous_gas=True, release_gas=True), (False, False))
-      self.assertFalse(response.update(2, request, aego, 20.0, -0.04, 7, passive, False, True))
+      self.assertFalse(response.update(2 * 10_000_000, request, aego, 20.0, -0.04, 7, passive, False, True))
       self.assertEqual(odyssey_command_domains(request, 20.0, release_gas=response.active), (True, False))
     for passive in (None, float("inf"), float("-inf"), float("nan")):
       response = OdysseyGasCoastRelease()
@@ -699,14 +699,28 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     def run(gas_floor, pitch=-0.04, aego=0.4, request=-0.12):
       response = OdysseyGasCoastRelease()
       for frame in range(0, 22, 2):
-        response.update(frame, 0.02, aego, 21.0, pitch, 7, None, True, True, gas_floor)
-      return response.update(22, request, aego, 21.0, pitch, 7, None, True, True, gas_floor)
+        response.update(frame * 10_000_000, 0.02, aego, 21.0, pitch, 7, None, True, True, gas_floor)
+      return response.update(22 * 10_000_000, request, aego, 21.0, pitch, 7, None, True, True, gas_floor)
 
     self.assertTrue(run(True))
     self.assertFalse(run(False))
     self.assertFalse(run(True, pitch=0.04))
     self.assertFalse(run(True, aego=-0.1))
     self.assertFalse(run(True, request=0.02))
+
+  def test_gas_coast_fallback_does_not_overstate_the_request_trend(self):
+    for slope in (-0.19, -0.21):
+      response = OdysseyGasCoastRelease()
+      for frame in range(0, 42, 2):
+        request = -0.05 + slope * frame * 0.01
+        released = response.update(frame * 10_000_000, request, 0.4, 21.0, -0.04, 7, None, True, True, True)
+        self.assertEqual(released, slope < -0.20 and frame >= 20)
+
+    response = OdysseyGasCoastRelease()
+    for frame in range(0, 22, 2):
+      self.assertFalse(response.update(frame * 10_000_000, -0.05, 0.4, 21.0, -0.04, 7, None, True, True, True))
+    self.assertFalse(response.update(100 * 10_000_000, -0.10, 0.4, 21.0, -0.04, 7, None, True, True, True))
+    self.assertTrue(response.update(102 * 10_000_000, -0.29, 0.4, 21.0, -0.04, 7, None, True, True, True))
 
   def test_exhausted_gas_command_releases_to_coast_without_requesting_brake(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
