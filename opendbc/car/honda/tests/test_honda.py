@@ -1,4 +1,6 @@
 import math
+import subprocess
+import sys
 import unittest
 from types import SimpleNamespace
 
@@ -603,6 +605,22 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertIsNone(response.update(94, 7, 0.0, 0.0, False, False))
     self.assertFalse(response.drag)
     self.assertFalse(response.warmup)
+
+  def test_first_coast_estimate_does_not_import_code_in_the_control_loop(self):
+    result = subprocess.run([sys.executable, "-c", """
+import sys
+from opendbc.car.honda.carcontroller import OdysseyCoastResponse
+
+response = OdysseyCoastResponse()
+for frame in range(0, 58, 2):
+  response.update(frame, 7, 0.0, -0.2, True, True)
+assert len(response.warmup[7]) == 4
+loaded = set(sys.modules)
+assert response.update(58, 7, 0.0, -0.2, True, True) is None
+assert not set(sys.modules) - loaded, sorted(set(sys.modules) - loaded)
+assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
+"""], capture_output=True, text=True)
+    self.assertEqual(result.returncode, 0, result.stderr)
 
   def test_passive_coast_forecast_tracks_changed_response_without_learning_an_outlier(self):
     response = OdysseyCoastResponse()

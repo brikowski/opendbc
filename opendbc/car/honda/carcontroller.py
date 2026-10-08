@@ -281,7 +281,7 @@ class OdysseyCoastResponse:
         samples = self.warmup.setdefault(gear, deque(maxlen=5))
         samples.append(residual)
         if len(samples) == samples.maxlen:
-          self.drag[gear] = float(np.median(samples))
+          self.drag[gear] = sorted(samples)[2]
     return forecast
 
 
