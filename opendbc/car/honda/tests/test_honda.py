@@ -411,7 +411,9 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
       self.assertLessEqual(abs(correction), ODYSSEY_RESPONSE_MAX_COUNTS)
     previous = response.correction
-    self.assertGreater(response.update(0.04, 1.0, -0.03, 30.0, 1, True), previous)
+    self.assertLess(response.update(0.04, 1.0, -0.03, 30.0, 1, True), previous)
+    previous = response.correction
+    self.assertGreater(response.update(0.04, 0.0, -0.03, 30.0, 1, True), previous)
     self.assertEqual(response.update(-0.02, 0.15, -0.03, 30.0, 1, False), 0.0)
     self.assertFalse(response.requests)
     for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES - 1):
@@ -420,6 +422,37 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
       self.assertLessEqual(abs(correction), ODYSSEY_RESPONSE_MAX_COUNTS)
     self.assertEqual(correction, -ODYSSEY_RESPONSE_MAX_COUNTS)
+
+  def test_gas_response_corrects_excess_while_startup_request_rises(self):
+    response = OdysseyGasResponse()
+    self.assertEqual(response.update(.1, .1, .02, 20.0, 7, True), 0.0)
+    self.assertLess(response.update(.11, .4, .02, 20.0, 7, True), 0.0)
+
+  def test_gas_response_uses_latest_tracking_error_with_delayed_feedback(self):
+    for request, aego, direction in ((.7, .9, -1), (.3, .1, 1)):
+      with self.subTest(request=request):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
+          self.assertEqual(response.update(.5, .5, .02, 20.0, 7, True), 0.0)
+        self.assertGreater(direction * response.update(request, aego, .02, 20.0, 7, True), 0.0)
+
+    for request, aego in ((.55, .525), (.45, .475)):
+      with self.subTest(request=request):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
+          response.update(.5, .5, .02, 20.0, 7, True)
+        self.assertEqual(response.update(request, aego, .02, 20.0, 7, True), 0.0)
+
+    for aego, request in ((.2, .21), (.8, .79)):
+      with self.subTest(aego=aego):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 30):
+          response.update(.5, aego, .02, 20.0, 7, True)
+        for _ in range(15):
+          previous = response.correction
+          correction = response.update(request, aego, .02, 20.0, 7, True)
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertAlmostEqual(correction, 200.0 * (request - aego))
 
   def test_gas_response_rejects_falling_grade_and_stale_lead_request(self):
     response = OdysseyGasResponse()

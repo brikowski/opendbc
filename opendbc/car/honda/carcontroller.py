@@ -202,13 +202,11 @@ class OdysseyGasResponse:
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
       delayed_request = self.requests[0]
       residual = self.error.update(delayed_request - aego)
+      # Delayed feedback must agree with the latest acceleration error.
+      residual = float(np.clip(residual, min(request - aego, 0.0), max(request - aego, 0.0)))
       target = float(np.clip(response_weight * response_gain * residual,
                              -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
-      if request < delayed_request - 0.08:
-        target = min(target, 0.0)
-      elif request > delayed_request + 0.08:
-        target = max(target, 0.0)
-    elif request <= self.requests[0]:
+    else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
       target = float(np.clip(response_weight * response_gain * min(request - aego, 0.0),
                              -ODYSSEY_RESPONSE_MAX_COUNTS, 0.0))
