@@ -274,7 +274,8 @@ class OdysseyCoastResponse:
     else:
       if self.coast_start is None:
         self.coast_start = frame
-      if frame - self.coast_start >= 50 and frame % 10 == 0:
+      # Acquire the first five settled samples promptly; retain the learned update cadence.
+      if frame - self.coast_start >= 50 and (gear not in self.drag or frame % 10 == 0):
         residual = aego - gravity
         samples = self.warmup.setdefault(gear, deque(maxlen=5))
         samples.append(residual)
