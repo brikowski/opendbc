@@ -674,6 +674,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       now = 1_000_000_000 + frame * 10_000_000
       CI.CS.odyssey_engine_torque_ts_nanos = now - 5_000_000
       CI.CS.odyssey_target_gear_ts_nanos = now - 5_000_000
+      CI.CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
       _, sends = controller.update(control.as_reader(), CI.CS, now)
       if any(addr == 0x1DF for addr, _, _ in sends):
         parser.update([(now, sends)])
@@ -770,15 +771,16 @@ class TestOdysseyLongitudinal(unittest.TestCase):
 
     def step():
       frame = controller.frame
-      CS.odyssey_engine_torque_ts_nanos = frame * 10_000_000
-      CS.odyssey_target_gear_ts_nanos = frame * 10_000_000
-      CS.odyssey_computer_braking_ts_nanos = frame * 10_000_000
-      _, sends = controller.update(control.as_reader(), CS, frame * 10_000_000)
+      now = 1_000_000_000 + frame * 10_000_000
+      CS.odyssey_engine_torque_ts_nanos = now
+      CS.odyssey_target_gear_ts_nanos = now
+      CS.odyssey_computer_braking_ts_nanos = now
+      _, sends = controller.update(control.as_reader(), CS, now)
       messages = [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1]
       if messages:
         for addr, dat, src in messages:
           self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, src, dat)))
-        parser.update([(frame * 10_000_000, messages)])
+        parser.update([(now, messages)])
       return parser.vl['ACC_CONTROL']
 
     for _ in range(60):
@@ -1115,6 +1117,59 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertIsNotNone(controller.odyssey_coast_response.drag.get(7))
       if frame == 74:
         self.assertGreater(signals['GAS_COMMAND'], 0)
+
+  def test_bad_coast_inputs_cannot_authorize_braking_after_reception_recovers(self):
+    from opendbc.safety.tests.libsafety import libsafety_py
+
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    faults = ('invalid_can', 'missing_gear', 'stale_gear', 'future_gear', 'missing_brake', 'stale_brake',
+              'future_brake', 'missing_gas', 'stale_gas', 'future_gas')
+    for blocked, known in [(None, False)] + [(fault, known) for fault in faults for known in (False, True)]:
+      with self.subTest(blocked=blocked, known=known):
+        safety = libsafety_py.libsafety
+        config = CP.safetyConfigs[-1]
+        self.assertEqual(safety.set_safety_hooks(config.safetyModel.raw, config.safetyParam), 0)
+        safety.init_tests()
+        safety.set_controls_allowed(True)
+        controller = CarController({Bus.pt: dbc}, CP)
+        if known:
+          for frame in range(0, 64, 2):
+            controller.odyssey_coast_response.update(frame, 7, -0.03, 0.3, True, True)
+          controller.frame = 64
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0.0, -0.03, 0.0])
+        control.actuators.accel = -0.15
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=20.0, aEgo=0.3, canValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_engine_torque_estimate=-100.0, odyssey_car_gas=0.0,
+                             odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=7,
+                             odyssey_target_gear_ts_nanos=0,
+                             odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        for frame in range(144):
+          now = 1_000_000_000 + frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          state.canValid = True
+          if blocked and frame <= 80:
+            if blocked == 'invalid_can':
+              state.canValid = False
+            else:
+              fault, signal = blocked.split('_')
+              timestamp = {'missing': 0, 'stale': now - 60_000_000, 'future': now + 1}[fault]
+              name = {'gear': 'odyssey_target_gear_ts_nanos', 'brake': 'odyssey_computer_braking_ts_nanos',
+                      'gas': 'odyssey_engine_torque_ts_nanos'}[signal]
+              setattr(CS, name, timestamp)
+          _, sends = controller.update(control.as_reader(), CS, now)
+          if frame % 2:
+            continue
+          messages = [s for s in sends if s[0] == 0x1DF and s[2] == 1]
+          for addr, dat, bus in messages:
+            self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, bus, dat)))
+          parser.update([(now, messages)])
+          first_brake = 60 if blocked is None else 142
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], frame >= first_brake)
+          self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
 
   def test_coast_brake_entry_requires_fresh_reliable_deceleration_shortfall(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

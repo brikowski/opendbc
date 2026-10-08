@@ -558,10 +558,14 @@ class CarController(CarControllerBase):
             coast_eligible = (CC.longActive and actuators.longControlState == LongCtrlState.pid and
                               not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
                               0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
+            coast_state_valid = (CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
+                                 0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
+                                 CS.odyssey_computer_braking_ts_nanos > 0 and
+                                 0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000)
             passive_accel = self.odyssey_coast_response.update(
               self.frame, CS.odyssey_target_gear, self.odyssey_pitch.x, CS.out.aEgo,
               not previous_gas and not self.odyssey_brake_selected and CS.odyssey_car_gas == 0.0 and
-              not CS.odyssey_computer_braking, coast_eligible)
+              not CS.odyssey_computer_braking, coast_eligible and coast_state_valid)
             release_gas = self.odyssey_gas_coast_release.update(
               self.frame, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
@@ -597,11 +601,7 @@ class CarController(CarControllerBase):
             # Inactive brake feedback cannot yet distinguish a pending command from settled coast.
             settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
                              self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
-            passive_response_eligible = (coast_eligible and CS.out.canValid and
-                                         CS.odyssey_target_gear_ts_nanos > 0 and
-                                         0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
-                                         CS.odyssey_computer_braking_ts_nanos > 0 and
-                                         0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000 and
+            passive_response_eligible = (coast_eligible and coast_state_valid and
                                          8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
             passive_gas = (passive_response_eligible and passive_accel < accel and
                            not CS.odyssey_computer_braking and
