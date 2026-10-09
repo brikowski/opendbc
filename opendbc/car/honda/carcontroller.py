@@ -622,6 +622,12 @@ class CarController(CarControllerBase):
                 coast_start is not None and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
                 CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
               gas_selected, brake_selected = False, True
+            # A released brake command can precede the received brake feedback returning to idle.
+            if (gas_selected and not previous_gas and coast_eligible and coast_state_valid and
+                8.0 <= CS.out.vEgo <= 35.0 and
+                (CS.odyssey_computer_braking or
+                 (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625))):
+              gas_selected = False
             if brake_selected and not self.odyssey_brake_selected:
               self.odyssey_brake_start_frame = self.frame
             elif not brake_selected:
