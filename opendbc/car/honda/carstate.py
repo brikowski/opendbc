@@ -56,6 +56,7 @@ class CarState(CarStateBase):
     self.odyssey_target_gear_ts_nanos = 0
     self.odyssey_computer_braking = False
     self.odyssey_computer_braking_ts_nanos = 0
+    self.odyssey_user_brake = np.nan
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -174,6 +175,7 @@ class CarState(CarStateBase):
       self.odyssey_target_gear_ts_nanos = cp.ts_nanos["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"]
       self.odyssey_computer_braking = bool(cp.vl["VSA_STATUS"]["COMPUTER_BRAKING"])
       self.odyssey_computer_braking_ts_nanos = cp.ts_nanos["VSA_STATUS"]["COMPUTER_BRAKING"]
+      self.odyssey_user_brake = cp.vl["VSA_STATUS"]["USER_BRAKE"]
 
     ret.steeringTorque = cp.vl["STEER_STATUS"]["STEER_TORQUE_SENSOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD.get(self.CP.carFingerprint, 1200)

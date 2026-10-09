@@ -250,7 +250,7 @@ class OdysseyBrakeRelease:
 
 
 class OdysseyCoastResponse:
-  """Estimate passive acceleration from previously issued, settled coast commands."""
+  """Estimate passive acceleration from settled, inactive actuators."""
   def __init__(self):
     self.drag = {}
     self.warmup = {}
@@ -556,6 +556,9 @@ class CarController(CarControllerBase):
           brake_domain = None
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
+            # Inactive brake feedback represents passive response only after the command settles.
+            settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
+                             self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
             coast_eligible = (CC.longActive and actuators.longControlState == LongCtrlState.pid and
                               not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
                               0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
@@ -565,7 +568,9 @@ class CarController(CarControllerBase):
                                  0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000)
             passive_accel = self.odyssey_coast_response.update(
               self.frame, CS.odyssey_target_gear, self.odyssey_pitch.x, CS.out.aEgo,
-              not previous_gas and not self.odyssey_brake_selected and CS.odyssey_car_gas == 0.0 and
+              # USER_BRAKE must be within one DBC quantization step of zero after brake selection.
+              not previous_gas and (not self.odyssey_brake_selected or (settled_brake and abs(CS.odyssey_user_brake) <= 0.015625)) and
+              CS.odyssey_car_gas == 0.0 and
               not CS.odyssey_computer_braking, coast_eligible and coast_state_valid)
             release_gas = self.odyssey_gas_coast_release.update(
               now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
@@ -602,9 +607,6 @@ class CarController(CarControllerBase):
             settled_coast = (coast_eligible and not previous_gas and not self.odyssey_brake_selected and
                              coast_start is not None and self.frame - coast_start >= 50 and
                              8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
-            # Inactive brake feedback cannot yet distinguish a pending command from settled coast.
-            settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
-                             self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
             passive_gas = (passive_response_eligible and accel < 0.0 and passive_accel < accel and
                            not CS.odyssey_computer_braking and
                            ((previous_gas and CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR) or
