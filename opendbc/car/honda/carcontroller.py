@@ -75,7 +75,8 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   gas_accel = accel if gas_accel is None else gas_accel
   gas_selected = accel > 0.0
   if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
-    gas_selected |= not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0
+    gas_selected |= (not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0 and
+                     gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])
     gas_selected |= previous_gas and gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
       gas_selected = False
@@ -107,9 +108,10 @@ def odyssey_grade_weight(pitch):
 def odyssey_uphill_gas_accel_with_cap(accel, pitch):
   """Return the gas-map input and a smooth feedback weight for clipped uphill load."""
   grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
-  zero_grade = 0.0
-  if grade > 0.0:
-    zero_grade = min(grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+  if grade < 0.0:
+    # Gravity still supplies acceleration when the requested net acceleration is zero.
+    return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade * ODYSSEY_GRADE_GAIN), 0.0
+  zero_grade = min(grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
   if zero_grade > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel <= 0.0:
     gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if accel <= gas_split:
@@ -121,19 +123,14 @@ def odyssey_uphill_gas_accel_with_cap(accel, pitch):
     return accel, 0.0
   x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
   grade_weight = x * x * (3.0 - 2.0 * x)
-  if grade > 0.0:
-    grade_accel = zero_grade + (grade * ODYSSEY_GRADE_GAIN - zero_grade) * grade_weight
-  else:
-    grade_accel = grade * grade_weight * ODYSSEY_GRADE_GAIN
-  if grade_accel >= 0.0:
-    mapped = max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
-    if grade_accel > 0.0:
-      limited_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0))
-      load = min(grade_accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
-      load_weight = load * load * (3.0 - 2.0 * load)
-      return mapped, limited_fraction * load_weight
-    return mapped, 0.0
-  return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade_accel), 0.0
+  grade_accel = zero_grade + (grade * ODYSSEY_GRADE_GAIN - zero_grade) * grade_weight
+  mapped = max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
+  if grade_accel > 0.0:
+    limited_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0))
+    load = min(grade_accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+    load_weight = load * load * (3.0 - 2.0 * load)
+    return mapped, limited_fraction * load_weight
+  return mapped, 0.0
 
 
 def odyssey_brake_accel(accel, pitch):
