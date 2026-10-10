@@ -42,8 +42,7 @@ ODYSSEY_STEER_ERROR_FRAMES = 20
 
 class OdysseySteeringAuthority:
   """Open the extra steering range only for persistent same-direction tracking error."""
-  def __init__(self, counts_per_accel):
-    self.counts_per_accel = counts_per_accel
+  def __init__(self):
     self.error_frames = 0
     self.direction = 0
 
@@ -61,11 +60,8 @@ class OdysseySteeringAuthority:
     self.direction = direction if qualified else 0
     if qualified:
       self.error_frames += 1
-    extra = 0.0
-    if self.error_frames >= ODYSSEY_STEER_ERROR_FRAMES:
-      extra = min(maximum - ODYSSEY_LKA_STEER_MAX,
-                  (abs(error) - ODYSSEY_STEER_ERROR_MIN) * self.counts_per_accel)
-    return float(np.clip(requested, -ODYSSEY_LKA_STEER_MAX - extra, ODYSSEY_LKA_STEER_MAX + extra))
+    limit = maximum if self.error_frames >= ODYSSEY_STEER_ERROR_FRAMES else ODYSSEY_LKA_STEER_MAX
+    return float(np.clip(requested, -limit, limit))
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False,
@@ -391,8 +387,7 @@ class CarController(CarControllerBase):
     self.gas = 0.0
     self.brake = 0.0
     self.last_torque = 0.0
-    self.odyssey_steering_authority = (OdysseySteeringAuthority(self.params.STEER_MAX / CP.lateralTuning.torque.latAccelFactor)
-                                       if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else None)
+    self.odyssey_steering_authority = OdysseySteeringAuthority() if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else None
     self.odyssey_brake_selected = False
     self.odyssey_brake_start_frame = None
     self.odyssey_gas_selected = False

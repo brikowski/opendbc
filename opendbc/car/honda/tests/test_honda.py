@@ -46,7 +46,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
       self.assertAlmostEqual(old_count, new_count, delta=0.01)
 
   def test_extra_range_requires_persistent_same_direction_error(self):
-    authority = OdysseySteeringAuthority(3840 / 1.35)
+    authority = OdysseySteeringAuthority()
     curvature = 1.8 / 31.0**2
     current = curvature - 0.3 / 31.0**2
     for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
@@ -68,7 +68,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
     for direction in (-1, 1):
       for speed in (8.5, 14.9, 15.0, 16.5, 19.9, 20.0, 33.0, 33.1):
         with self.subTest(direction=direction, speed=speed):
-          authority = OdysseySteeringAuthority(3840 / 1.35)
+          authority = OdysseySteeringAuthority()
           curvature = direction * 1.5 / speed**2
           current = curvature - direction * 0.4 / speed**2
           for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
@@ -78,10 +78,31 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
           else:
             self.assertEqual(abs(output), 2560)
 
+  def test_qualified_authority_follows_requested_torque(self):
+    for direction in (-1, 1):
+      for error in (0.11, 0.18, 0.3, 0.7):
+        with self.subTest(direction=direction, error=error):
+          authority = OdysseySteeringAuthority()
+          speed = 22.0
+          curvature = direction * 1.8 / speed**2
+          current = curvature - direction * error / speed**2
+          for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+            output = authority.limit(direction * 3500, curvature, current, speed, True, 3840)
+          self.assertEqual(output, direction * 3500)
+          self.assertEqual(authority.limit(direction * 4200, curvature, current, speed, True, 3840), direction * 3840)
+          self.assertEqual(authority.limit(direction * 2700, curvature, current, speed, True, 3840), direction * 2700)
+          # Falling demand closes the gate; a renewed request must qualify again.
+          self.assertEqual(authority.limit(direction * 2000, curvature, current, speed, True, 3840), direction * 2000)
+          self.assertEqual(authority.limit(direction * 3500, curvature, current, speed, True, 3840), direction * 2560)
+          # Countersteering error must not grant authority against the planned turn.
+          for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+            output = authority.limit(direction * 3500, -curvature, -curvature - direction * error / speed**2, speed, True, 3840)
+          self.assertEqual(output, direction * 2560)
+
   def test_extra_range_does_not_withdraw_on_growing_turn_demand(self):
     for direction in (-1, 1):
       with self.subTest(direction=direction):
-        authority = OdysseySteeringAuthority(3840 / 1.35)
+        authority = OdysseySteeringAuthority()
         speed = 31.5
 
         def command(demand, error, direction=direction, speed=speed, authority=authority):
@@ -177,26 +198,25 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
 
         counts = [step(frame) for frame in range(200)]
         self.assertLessEqual(max(abs(right - left) for left, right in zip(counts, counts[1:], strict=False)), 77)
-        self.assertGreater(counts[-1], 2560)
-        self.assertLessEqual(counts[-1], 3840)
+        self.assertEqual(counts[-1], 3840)
         state.steerFaultTemporary = True
-        fault_release = [step(frame) for frame in range(200, 215)]
+        fault_release = [step(frame) for frame in range(200, 220)]
         self.assertLessEqual(max(abs(right - left) for left, right in zip(fault_release, fault_release[1:], strict=False)), 77)
         self.assertEqual(fault_release[-1], 2560)
         state.steerFaultTemporary = False
-        for frame in range(215, 250):
+        for frame in range(220, 265):
           step(frame)
         state.steeringPressed = True
-        falling = [step(frame) for frame in range(250, 265)]
+        falling = [step(frame) for frame in range(265, 285)]
         self.assertLessEqual(max(abs(right - left) for left, right in zip(falling, falling[1:], strict=False)), 77)
         self.assertEqual(falling[-1], 2560)
         state.steeringPressed = False
         control.actuators.torque = 1.0
         control.actuators.curvature *= -1
         control.currentCurvature *= -1
-        self.assertLessEqual(step(265), 2560)
+        self.assertLessEqual(step(285), 2560)
         control.latActive = False
-        self.assertEqual(step(266), 0)
+        self.assertEqual(step(286), 0)
 
 
 class TestOdysseyLongitudinal(unittest.TestCase):
