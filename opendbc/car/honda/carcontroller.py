@@ -220,33 +220,14 @@ class OdysseyGasResponse:
     return self.correction
 
 
-class OdysseyBrakeRelease:
-  """Release easing brake requests when fresh feedback and available coast response permit."""
-  def __init__(self):
-    self.samples = deque(maxlen=32)
-    self.gear = None
-
-  def reset(self):
-    self.samples.clear()
-    self.gear = None
-
-  def update(self, now_nanos, request, aego, braking, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None):
-    if (not eligible or not all(math.isfinite(v) for v in (request, aego, car_gas, gear)) or
-        not 1 <= gear <= 10 or car_gas != 0 or
-        braking_ts_nanos <= 0 or not 0 <= now_nanos - braking_ts_nanos < 60_000_000):
-      self.reset()
-      return False
-    if (self.gear is not None and gear != self.gear) or (self.samples and not 0 < now_nanos - self.samples[-1][0] < 40_000_000):
-      self.reset()
-    self.gear = gear
-    self.samples.append((now_nanos, request))
-    prior = next((sample for sample in reversed(self.samples)
-                  if sample[0] <= now_nanos - ODYSSEY_REQUEST_LOOKBACK_NS), None)
-    if prior is None or now_nanos - prior[0] > ODYSSEY_REQUEST_LOOKBACK_NS + 40_000_000:
-      return False
-    return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
-            request - prior[1] > 0.05 and
-            passive_accel is not None and passive_accel <= request)
+def odyssey_brake_release(now_nanos, request, aego, braking, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None):
+  """Release excess braking when qualified coast can supply the requested deceleration."""
+  if (not eligible or not all(math.isfinite(v) for v in (request, aego, car_gas, gear)) or
+      not 1 <= gear <= 10 or car_gas != 0 or
+      braking_ts_nanos <= 0 or not 0 <= now_nanos - braking_ts_nanos < 60_000_000):
+    return False
+  return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
+          passive_accel is not None and passive_accel <= request)
 
 
 class OdysseyCoastResponse:
@@ -430,7 +411,6 @@ class CarController(CarControllerBase):
     self.odyssey_gas_selected = False
     self.odyssey_gas_bridge_active = False
     self.odyssey_gas_response = OdysseyGasResponse()
-    self.odyssey_brake_release = OdysseyBrakeRelease()
     self.odyssey_coast_response = OdysseyCoastResponse()
     self.odyssey_gas_coast_release = OdysseyGasCoastRelease()
     self.odyssey_pitch = FirstOrderFilter(0.0, ODYSSEY_GRADE_FILTER_TAU, DT_CTRL)
@@ -459,7 +439,6 @@ class CarController(CarControllerBase):
       self.odyssey_gas_selected = False
       self.odyssey_gas_bridge_active = False
       self.odyssey_gas_response.reset()
-      self.odyssey_brake_release.reset()
       self.odyssey_coast_response.reset()
       self.odyssey_gas_coast_release.reset()
 
@@ -579,7 +558,7 @@ class CarController(CarControllerBase):
               CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
               0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000,
               self.gas + self.odyssey_gas_response.correction <= 0.0)
-            release_brake = self.odyssey_brake_release.update(
+            release_brake = odyssey_brake_release(
               now_nanos, accel, CS.out.aEgo, CS.odyssey_computer_braking, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
               CC.longActive and self.odyssey_brake_selected and CS.out.canValid and actuators.longControlState == LongCtrlState.pid and

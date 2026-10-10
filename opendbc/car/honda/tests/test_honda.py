@@ -13,7 +13,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_G
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
                                              ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_SLEW_COUNTS,
                                              ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_STEER_ERROR_FRAMES,
-                                             ODYSSEY_UPHILL_GAS_ACCEL_MAX, CarController, OdysseyBrakeRelease,
+                                             ODYSSEY_UPHILL_GAS_ACCEL_MAX, CarController, odyssey_brake_release,
                                              OdysseySteeringAuthority,
                                              OdysseyCoastResponse, OdysseyGasCoastRelease, OdysseyGasResponse, odyssey_brake_accel,
                                              odyssey_command_domains, odyssey_gas_command, odyssey_grade_weight,
@@ -1156,7 +1156,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         _, sends = controller.update(control.as_reader(), CS, 1_000_000_000)
         parser.update([(1_000_000_000, [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1])])
         self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
-        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked in ('low_speed', 'received_gas', 'received_brake'))
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked in ('low_speed', 'received_gas'))
 
   def test_brake_entry_ignores_transient_passive_response_before_settling(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -1532,50 +1532,30 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         parser.update([(1_000_000_000, [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1])])
         self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked in ('low_speed', 'short_coast'))
 
-  def test_brake_feedback_release_requires_easing_request_and_excess_deceleration(self):
+  def test_brake_feedback_release_requires_fresh_state_and_excess_deceleration(self):
     for blocked in (None, 'no_brake', 'stale', 'future', 'missing', 'gas', 'gear', 'ineligible',
-                    'flat_request', 'response', 'strong', 'positive', 'gap', 'gear_change'):
+                    'response', 'strong', 'positive'):
       with self.subTest(blocked=blocked):
-        response = OdysseyBrakeRelease()
-        for frame in range(12):
-          now = 1_000_000_000 + frame * 20_000_000
-          request = -.28 + frame * .008
-          if blocked == 'flat_request':
-            request = -.2
-          elif blocked == 'strong':
-            request -= .2
-          elif blocked == 'positive':
-            request = .1
-          timestamp = now - 5_000_000
-          if blocked in ('stale', 'future', 'missing'):
-            timestamp = {'stale': now - 60_000_000, 'future': now + 1, 'missing': 0}[blocked]
-          if blocked == 'gap':
-            now += frame * 40_000_000
-            timestamp = now - 5_000_000
-          gear = 0 if blocked == 'gear' else (6 + frame % 2 if blocked == 'gear_change' else 6)
-          release = response.update(now, request, request - (.1 if blocked == 'response' else .3),
-                                    blocked != 'no_brake', timestamp, 1. if blocked == 'gas' else 0.,
-                                    gear, blocked != 'ineligible', request - .01)
-          self.assertEqual(release, blocked is None and frame >= 10)
+        now = 1_000_000_000
+        request = -.4 if blocked == 'strong' else .1 if blocked == 'positive' else -.2
+        timestamp = {'stale': now - 60_000_000, 'future': now + 1, 'missing': 0}.get(blocked, now - 5_000_000)
+        release = odyssey_brake_release(now, request, request - (.1 if blocked == 'response' else .3),
+                                        blocked != 'no_brake', timestamp, 1. if blocked == 'gas' else 0.,
+                                        0 if blocked == 'gear' else 6, blocked != 'ineligible', request - .01)
+        self.assertEqual(release, blocked is None)
         if blocked is None:
           self.assertEqual(odyssey_command_domains(request, 20., previous_brake=True, release_brake=release), (False, False))
           self.assertEqual(odyssey_command_domains(-.4, 20., previous_brake=True, release_brake=True), (False, True))
           self.assertEqual(odyssey_command_domains(request, 4., previous_brake=True, release_brake=True), (False, True))
-          self.assertFalse(response.update(now + 20_000_000, request, request - .3, False,
-                                           0, 0., 6, True))
-          self.assertFalse(response.samples)
 
   def test_brake_release_requires_coast_to_supply_requested_deceleration(self):
     for coast_error in (None, -.01, 0., .001, .1, .19):
       with self.subTest(coast_error=coast_error):
-        response = OdysseyBrakeRelease()
-        for frame in range(12):
-          now = 1_000_000_000 + frame * 20_000_000
-          request = -.28 + frame * .008
-          passive_accel = None if coast_error is None else request + coast_error
-          release = response.update(now, request, request - .3, True, now - 5_000_000,
-                                    0., 6, True, passive_accel)
-          self.assertEqual(release, frame >= 10 and coast_error is not None and coast_error <= 0.)
+        request = -.2
+        passive_accel = None if coast_error is None else request + coast_error
+        release = odyssey_brake_release(1_000_000_000, request, request - .3, True, 995_000_000,
+                                        0., 6, True, passive_accel)
+        self.assertEqual(release, coast_error is not None and coast_error <= 0.)
 
   def test_brake_release_uses_received_braking_with_flat_engine_torque(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
