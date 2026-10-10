@@ -231,7 +231,7 @@ def odyssey_brake_release(now_nanos, request, aego, braking, braking_ts_nanos, c
 
 
 class OdysseyCoastResponse:
-  """Estimate passive acceleration from settled, inactive actuators."""
+  """Return a prior passive estimate, or None if unlearned or currently ineligible."""
   def __init__(self):
     self.drag = {}
     self.warmup = {}
@@ -561,12 +561,8 @@ class CarController(CarControllerBase):
             release_brake = odyssey_brake_release(
               now_nanos, accel, CS.out.aEgo, CS.odyssey_computer_braking, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
-              CC.longActive and self.odyssey_brake_selected and CS.out.canValid and actuators.longControlState == LongCtrlState.pid and
-              not CS.out.gasPressed and not CS.out.brakePressed and CS.out.vEgo >= 8.0 and
-              CS.odyssey_engine_torque_ts_nanos > 0 and
-              0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000,
-              passive_accel if (passive_accel is not None and CS.odyssey_target_gear_ts_nanos > 0 and
-                                0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000) else None)
+              self.odyssey_brake_selected and CS.out.vEgo >= 8.0 and CS.odyssey_engine_torque_ts_nanos > 0,
+              passive_accel)
             gas_accel = accel
             cap_weight = 0.0
             bridge_weight = 0.0
@@ -574,33 +570,31 @@ class CarController(CarControllerBase):
                 actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
               gas_accel, cap_weight = odyssey_uphill_gas_accel_with_cap(accel, self.odyssey_pitch.x)
               bridge_weight = odyssey_grade_weight(self.odyssey_pitch.x)
-            passive_response_eligible = (coast_eligible and coast_state_valid and
-                                         8.0 <= CS.out.vEgo <= 35.0 and passive_accel is not None)
-            gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
-                                                                    self.odyssey_brake_selected,
-                                                                    previous_gas,
-                                                                    self.odyssey_gas_bridge_active,
-                                                                    gas_accel, release_brake, release_gas,
-                                                                    passive_accel if passive_response_eligible else None)
+            passive_response_eligible = 8.0 <= CS.out.vEgo <= 35.0 and passive_accel is not None
             coast_start = self.odyssey_coast_response.coast_start
-            settled_coast = (coast_eligible and not previous_gas and not self.odyssey_brake_selected and
-                             coast_start is not None and self.frame - coast_start >= 50 and
-                             8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and passive_accel is not None)
+            settled_coast = (not self.odyssey_brake_selected and coast_start is not None and
+                             self.frame - coast_start >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
             passive_gas = (passive_response_eligible and accel < 0.0 and passive_accel < accel and
                            not CS.odyssey_computer_braking and
                            ((previous_gas and CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR) or
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              (settled_coast or settled_brake))))
-            gas_selected |= passive_gas
-            brake_selected &= not passive_gas
             if passive_gas:
+              gas_selected, brake_selected = True, False
               self.odyssey_gas_bridge_active = False
             # A prior coast forecast and fresh response can establish brake need before the learning dwell.
-            if (passive_response_eligible and accel < 0.0 and not previous_gas and not self.odyssey_brake_selected and
-                coast_start is not None and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
-                CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
+            elif (passive_response_eligible and accel < 0.0 and not previous_gas and not self.odyssey_brake_selected and
+                  coast_start is not None and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
+                  CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
               gas_selected, brake_selected = False, True
+            else:
+              gas_selected, brake_selected = odyssey_command_domains(accel, CS.out.vEgo,
+                                                                      self.odyssey_brake_selected,
+                                                                      previous_gas,
+                                                                      self.odyssey_gas_bridge_active,
+                                                                      gas_accel, release_brake, release_gas,
+                                                                      passive_accel if passive_response_eligible else None)
             # A released brake command can precede the received brake feedback returning to idle.
             if (gas_selected and not previous_gas and coast_eligible and coast_state_valid and
                 8.0 <= CS.out.vEgo <= 35.0 and
