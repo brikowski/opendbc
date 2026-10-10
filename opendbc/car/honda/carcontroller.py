@@ -81,7 +81,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
       gas_selected = False
     brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0 and not release_brake)
     # Holding net acceleration can still need brakes when coasting would accelerate faster.
-    if previous_brake and passive_accel is not None and accel < passive_accel:
+    if previous_brake and not release_brake and passive_accel is not None and accel < passive_accel:
       gas_selected, brake_selected = False, True
   else:
     brake_selected = accel <= 0.0
@@ -551,6 +551,10 @@ class CarController(CarControllerBase):
               CS.odyssey_car_gas, CS.odyssey_target_gear,
               self.odyssey_brake_selected and CS.out.vEgo >= 8.0 and CS.odyssey_engine_torque_ts_nanos > 0,
               passive_accel)
+            # Idle brakes and a positive-request shortfall supersede a held coast forecast.
+            release_brake |= (settled_brake and accel > 0.0 and CS.odyssey_car_gas == 0.0 and
+                              not CS.odyssey_computer_braking and abs(CS.odyssey_user_brake) <= 0.015625 and
+                              CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR)
             gas_accel = accel
             cap_weight = 0.0
             bridge_weight = 0.0
