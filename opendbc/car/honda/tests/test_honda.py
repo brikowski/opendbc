@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from opendbc.can import CANPacker
 from opendbc.can.parser import CANParser
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, gen_empty_fingerprint, structs
-from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
+from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
                                              ODYSSEY_ZERO_GAS_GRADE_GAIN,
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
@@ -15,7 +15,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_BRAKE_GRADE_GAIN, ODYSSEY_G
                                              ODYSSEY_ROAD_BRAKE_ENTRY, ODYSSEY_STEER_ERROR_FRAMES,
                                              ODYSSEY_UPHILL_GAS_ACCEL_MAX, CarController, odyssey_brake_release,
                                              OdysseySteeringAuthority,
-                                             OdysseyCoastResponse, OdysseyGasCoastRelease, OdysseyGasResponse, odyssey_brake_accel,
+                                             OdysseyCoastResponse, OdysseyGasCoastRelease, OdysseyGasResponse,
                                              odyssey_command_domains, odyssey_gas_command, odyssey_grade_weight,
                                              odyssey_creep_brake_accel, odyssey_low_speed_gas_command,
                                              odyssey_uphill_gas_accel_with_cap)
@@ -1442,7 +1442,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
       output, signals = step()
     self.assertEqual(signals['BRAKE_REQUEST'], 1)
     self.assertEqual(signals['GAS_COMMAND'], -30000)
-    self.assertAlmostEqual(signals['ACCEL_COMMAND'], odyssey_brake_accel(-0.15, controller.odyssey_pitch.x), delta=0.01)
+    self.assertAlmostEqual(signals['ACCEL_COMMAND'], -0.15, delta=0.01)
     self.assertAlmostEqual(output.accel, signals['ACCEL_COMMAND'], delta=0.01)
     control.actuators.accel = 0.4
     state.aEgo = 0.0
@@ -1495,7 +1495,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
       self.assertEqual(signals['BRAKE_REQUEST'], 60 <= frame < 76)
       if 60 <= frame < 76:
         self.assertEqual(signals['GAS_COMMAND'], -30000)
-        self.assertAlmostEqual(signals['ACCEL_COMMAND'], odyssey_brake_accel(control.actuators.accel, controller.odyssey_pitch.x), delta=0.01)
+        self.assertAlmostEqual(signals['ACCEL_COMMAND'], control.actuators.accel, delta=0.01)
         self.assertAlmostEqual(output.accel, signals['ACCEL_COMMAND'], delta=0.01)
         self.assertIsNotNone(controller.odyssey_coast_response.drag.get(7))
       if frame == 76:
@@ -1727,25 +1727,32 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True,
                                               gas_accel=odyssey_uphill_gas_accel_with_cap(-0.23, 0.07)[0]), (True, False))
 
-  def test_brake_grade_translation_tracks_net_acceleration(self):
-    accel = -0.5
-    pitch = 0.03
-    grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
-    self.assertEqual(ODYSSEY_BRAKE_GRADE_GAIN, 0.3)
-    self.assertAlmostEqual(odyssey_brake_accel(accel, pitch), accel + grade)
-    self.assertAlmostEqual(odyssey_brake_accel(accel, -pitch), accel - grade)
-    self.assertEqual(odyssey_brake_accel(-0.1, 0.2), 0.0)
-    self.assertEqual(odyssey_brake_accel(0.1, pitch), 0.1)
-
-  def test_light_downhill_braking_cannot_be_dominated_by_grade_compensation(self):
-    for request in (-0.20, -0.10, -0.05, -0.001):
-      with self.subTest(request=request):
-        command = odyssey_brake_accel(request, -0.05)
-        self.assertGreaterEqual(command, 2 * request)
-        self.assertLessEqual(command, request)
-    self.assertAlmostEqual(odyssey_brake_accel(-0.5, -0.05), -0.5 - 0.3 * ACCELERATION_DUE_TO_GRAVITY * math.sin(0.05))
-    self.assertEqual(odyssey_brake_accel(0.0, -0.05), 0.0)
-    self.assertEqual(odyssey_brake_accel(0.01, -0.05), 0.01)
+  def test_road_brake_wire_preserves_request_across_grade_and_response(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for pitch in (-.08, -.03, 0., .03, .08, None, math.nan):
+      for actual in (-2., 2.):
+        with self.subTest(pitch=pitch, actual=actual):
+          controller = CarController({Bus.pt: dbc}, CP)
+          CS = CarState(CP)
+          CS.update(CS.get_can_parsers(CP))
+          CS.out = structs.CarState(vEgo=20., aEgo=actual, canValid=True)
+          control = structs.CarControl(enabled=True, longActive=True,
+                                       orientationNED=[] if pitch is None else [0., pitch, 0.])
+          control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+          parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+          for request in (-4., -.5, -.15, -.05, -.001, 0., .1, 3.):
+            control.actuators.accel = request
+            for _ in range(4):
+              now = 1_000_000_000 + controller.frame * 10_000_000
+              output, sends = controller.update(control.as_reader(), CS, now)
+              parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+            expected = min(max(request, CarControllerParams.BOSCH_ACCEL_MIN), CarControllerParams.BOSCH_ACCEL_MAX)
+            self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], expected, delta=.01)
+            self.assertAlmostEqual(output.accel, expected, delta=.00001)
+            self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], request < 0.)
+            if request < 0.:
+              self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
 
   def test_negative_gas_bridge_preserves_existing_domain_lifecycle(self):
     gas, active = odyssey_gas_command(-0.10, 91.0, True, False, False)

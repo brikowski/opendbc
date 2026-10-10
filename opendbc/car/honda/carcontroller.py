@@ -28,7 +28,6 @@ ODYSSEY_RESPONSE_MAX_COUNTS = 100.0
 ODYSSEY_RESPONSE_COUNTS_PER_ACCEL = 200.0
 ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
 ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
-ODYSSEY_BRAKE_GRADE_GAIN = 0.3
 ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
 ODYSSEY_REQUEST_LOOKBACK_NS = 200_000_000
 ODYSSEY_COAST_RELEASE_GRAVITY = 0.25
@@ -131,15 +130,6 @@ def odyssey_uphill_gas_accel_with_cap(accel, pitch):
     load_weight = load * load * (3.0 - 2.0 * load)
     return mapped, limited_fraction * load_weight
   return mapped, 0.0
-
-
-def odyssey_brake_accel(accel, pitch):
-  """Translate the requested net deceleration into Honda's grade-relative brake command."""
-  if accel >= 0.0:
-    return accel
-  grade_accel = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_BRAKE_GRADE_GAIN
-  # Bound downhill feedforward by requested deceleration so it vanishes at release.
-  return min(accel + max(grade_accel, accel), 0.0)
 
 
 def odyssey_creep_brake_accel(accel, speed):
@@ -626,10 +616,6 @@ class CarController(CarControllerBase):
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
             if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
               self.gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
-            if (brake_selected and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and odyssey_pitch_valid and
-                actuators.longControlState == LongCtrlState.pid and not CS.out.brakePressed):
-              brake_accel = odyssey_brake_accel(accel, self.odyssey_pitch.x)
-              self.accel = float(np.clip(brake_accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
             if CC.longActive and brake_selected and not CS.out.gasPressed and not CS.out.brakePressed:
               self.accel = odyssey_creep_brake_accel(self.accel, CS.out.vEgo)
             # A qualified passive-response shortfall can use gas and existing feedback at the map floor.
