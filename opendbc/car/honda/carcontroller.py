@@ -593,7 +593,7 @@ class CarController(CarControllerBase):
               self.odyssey_brake_start_frame = self.frame
             elif not brake_selected:
               self.odyssey_brake_start_frame = None
-            self.odyssey_brake_selected = brake_selected
+            self.odyssey_brake_selected = CC.longActive and brake_selected
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:
               self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
