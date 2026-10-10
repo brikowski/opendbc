@@ -426,7 +426,6 @@ class CarController(CarControllerBase):
       self.odyssey_gas_selected = False
       self.odyssey_gas_bridge_active = False
       self.odyssey_gas_response.reset()
-      self.odyssey_coast_response.reset()
       self.odyssey_gas_coast_release.reset()
 
     # *** rate limit steer ***
@@ -525,9 +524,11 @@ class CarController(CarControllerBase):
             # Inactive brake feedback represents passive response only after the command settles.
             settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
                              self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
-            coast_eligible = (CC.longActive and actuators.longControlState == LongCtrlState.pid and
-                              not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
-                              0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
+            coast_observation_eligible = (not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
+                                          0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
+            coast_eligible = CC.longActive and actuators.longControlState == LongCtrlState.pid and coast_observation_eligible
+            manual_coast_eligible = (not CC.longActive and 8.0 <= CS.out.vEgo <= 35.0 and
+                                     abs(CS.odyssey_user_brake) <= 0.015625 and coast_observation_eligible)
             coast_state_valid = (CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
                                  0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
                                  CS.odyssey_computer_braking_ts_nanos > 0 and
@@ -538,7 +539,7 @@ class CarController(CarControllerBase):
               not previous_gas and (not self.odyssey_brake_selected or
                                     (settled_brake and accel < 0.0 and abs(CS.odyssey_user_brake) <= 0.015625)) and
               CS.odyssey_car_gas == 0.0 and
-              not CS.odyssey_computer_braking, coast_eligible and coast_state_valid)
+              not CS.odyssey_computer_braking, (coast_eligible or manual_coast_eligible) and coast_state_valid)
             release_gas = self.odyssey_gas_coast_release.update(
               now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
