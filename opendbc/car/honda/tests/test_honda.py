@@ -2,11 +2,12 @@ import math
 import subprocess
 import sys
 import unittest
+from collections import deque
 from types import SimpleNamespace
 
 from opendbc.can import CANPacker
 from opendbc.can.parser import CANParser
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, gen_empty_fingerprint, structs
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL, Bus, gen_empty_fingerprint, structs
 from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
                                              ODYSSEY_ZERO_GAS_GRADE_GAIN,
@@ -526,7 +527,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       previous = capped.correction
       extra = capped.update(0.95, 0.65, 0.04, 19.0, 1, True, 1.0)
       self.assertLessEqual(abs(extra - previous), 10.0)
-    self.assertAlmostEqual(base, 60.0)
+    self.assertGreater(base, 60.0)
+    self.assertLess(base, extra)
     self.assertEqual(extra, ODYSSEY_RESPONSE_MAX_COUNTS)
     self.assertLessEqual(capped.update(0.95, 0.65, 0.04, 19.0, 1, True, 0.0), extra)
     self.assertEqual(capped.update(0.95, 0.65, 0.04, 19.0, 1, False, 1.0), 0.0)
@@ -551,7 +553,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     # A stronger deceleration request must unwind the old positive correction.
     previous = response.correction
     self.assertLess(update(request=-0.2), previous)
-    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
       update(request=-0.2, aego=0.2)
     self.assertLess(response.correction, 0.0)
     self.assertEqual(update(eligible=False), 0.0)
@@ -608,11 +610,86 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         response = OdysseyGasResponse()
         for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 30):
           response.update(.5, aego, .02, 20.0, 7, True)
+        retained = response.integral
         for _ in range(15):
           previous = response.correction
           correction = response.update(request, aego, .02, 20.0, 7, True)
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
-        self.assertAlmostEqual(correction, 200.0 * (request - aego))
+        # A smaller current error limits the proportional term, while the offset remains bounded.
+        self.assertLessEqual(abs(response.integral - retained), 200.0 * abs(request - aego) * .3 + 1e-6)
+        self.assertAlmostEqual(correction - response.integral, 200.0 * (request - aego))
+
+  def test_gas_response_retains_correction_at_requested_acceleration(self):
+    for direction in (-1, 1):
+      with self.subTest(direction=direction):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 100):
+          response.update(.2, .2 - direction * .03, 0., 20., 6, True)
+        previous = response.correction
+        for _ in range(50):
+          correction = response.update(.2, .2, 0., 20., 6, True)
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          previous = correction
+        self.assertGreater(direction * correction, 10.)
+        self.assertLess(abs(correction), ODYSSEY_RESPONSE_MAX_COUNTS)
+
+  def test_gas_response_converges_after_request_change(self):
+    # Illustrative delayed plant: a convergence regression, not an identified Honda gas gain.
+    for gain in (.001, .003):
+      for bias in (-.06, .06):
+        for cap in (0., 1.):
+          with self.subTest(gain=gain, bias=bias, cap=cap):
+            response = OdysseyGasResponse()
+            delay = deque([.2 + bias] * 36)
+            achieved = .2 + bias
+            previous_command = .2
+            errors = []
+            for frame in range(2000):
+              request = .2 if frame < 1000 else .1
+              correction = response.update(request, achieved, 0., 20., 6, True, cap_weight=cap)
+              command = request + gain * correction
+              if frame == 1000:
+                self.assertLess(command, previous_command)
+              previous_command = command
+              delay.append(command + bias)
+              achieved += (delay.popleft() - achieved) * DT_CTRL * 2 / (.15 + DT_CTRL * 2)
+              if frame >= 1900:
+                errors.append(abs(request - achieved))
+            self.assertLess(sum(errors) / len(errors), .003)
+
+  def test_gas_response_saturation_unwinds_without_storing_excess(self):
+    for direction in (-1, 1):
+      with self.subTest(direction=direction):
+        response = OdysseyGasResponse()
+        for _ in range(300):
+          response.update(.2, .2 - direction * 2., 0., 20., 6, True)
+        self.assertEqual(response.correction, direction * ODYSSEY_RESPONSE_MAX_COUNTS)
+        self.assertEqual(response.integral, 0.)
+        for _ in range(100):
+          previous = response.correction
+          response.update(.2, .2 + direction * .3, 0., 20., 6, True)
+          self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertLessEqual(abs(response.correction), ODYSSEY_RESPONSE_MAX_COUNTS)
+        self.assertLess(direction * response.correction, 0.)
+        response.reset()
+        for _ in range(300):
+          response.update(.2, .2 - direction * .3, 0., 20., 6, True, response_weight=.1)
+          self.assertLessEqual(abs(response.integral), ODYSSEY_RESPONSE_MAX_COUNTS)
+
+  def test_gas_response_drops_retained_offset_with_observer_validity(self):
+    for change in ('gear', 'activity', 'grade', 'inactive', 'invalid', 'unused'):
+      with self.subTest(change=change):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 100):
+          response.update(.2, 0., .04, 20., 6, True, shift_activity=102)
+        self.assertGreater(response.integral, 0.)
+        for _ in range(10):
+          response.update(.2, .2, .02 if change == 'grade' else .04, 20.,
+                          7 if change == 'gear' else 6, change != 'inactive',
+                          response_weight=0. if change == 'unused' else 1.,
+                          shift_activity=110 if change == 'activity' else 102,
+                          cap_weight=math.nan if change == 'invalid' else 0.)
+        self.assertEqual(response.integral, 0.)
 
   def test_gas_response_rejects_falling_grade_and_stale_lead_request(self):
     response = OdysseyGasResponse()
@@ -702,10 +779,12 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           response = controller.odyssey_gas_response
           self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
           if frame == 78:
-            self.assertAlmostEqual(response.correction, 40., delta=1e-5)
+            self.assertGreater(response.correction, 40.)
           if frame == 80:
             self.assertEqual(len(response.requests), 1 if changed else ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
-            self.assertAlmostEqual(response.correction, 30. if changed else 40., delta=1e-5)
+            self.assertAlmostEqual(response.correction, previous - 10. if changed else previous + .8, delta=1e-5)
+            if changed:
+              self.assertEqual(response.integral, 0.)
           if frame == 128 and changed:
             self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES)
             self.assertEqual(response.correction, 0.)

@@ -155,6 +155,7 @@ class OdysseyGasResponse:
   """Compare delayed gas requests and response within the same received drivetrain state."""
   def __init__(self):
     self.correction = 0.0
+    self.integral = 0.0
     self.requests = deque(maxlen=ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
     self.pitch_peak = None
     self.drivetrain = None
@@ -164,6 +165,7 @@ class OdysseyGasResponse:
     self.__init__()
 
   def clear_observer(self):
+    self.integral = 0.0
     self.requests.clear()
     self.pitch_peak = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
@@ -189,7 +191,14 @@ class OdysseyGasResponse:
       residual = self.error.update(delayed_request - aego)
       # Delayed feedback must agree with the latest acceleration error.
       residual = float(np.clip(residual, min(request - aego, 0.0), max(request - aego, 0.0)))
-      target = float(np.clip(response_weight * response_gain * residual,
+      proportional = response_gain * residual
+      integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
+                                -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
+      target = response_weight * (proportional + integral)
+      # Retain the required offset at zero error without accumulating against the correction rail.
+      if abs(target) <= ODYSSEY_RESPONSE_MAX_COUNTS or target * residual < 0.0:
+        self.integral = integral
+      target = float(np.clip(response_weight * (proportional + self.integral),
                              -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
     else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
