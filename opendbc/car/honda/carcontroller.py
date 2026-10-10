@@ -547,8 +547,9 @@ class CarController(CarControllerBase):
                                  0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000)
             passive_accel = self.odyssey_coast_response.update(
               self.frame, CS.odyssey_target_gear, self.odyssey_pitch.x, CS.out.aEgo,
-              # USER_BRAKE must be within one DBC quantization step of zero after brake selection.
-              not previous_gas and (not self.odyssey_brake_selected or (settled_brake and abs(CS.odyssey_user_brake) <= 0.015625)) and
+              # A nonnegative brake hold is controlled response, not a passive coast observation.
+              not previous_gas and (not self.odyssey_brake_selected or
+                                    (settled_brake and accel < 0.0 and abs(CS.odyssey_user_brake) <= 0.015625)) and
               CS.odyssey_car_gas == 0.0 and
               not CS.odyssey_computer_braking, coast_eligible and coast_state_valid)
             release_gas = self.odyssey_gas_coast_release.update(

@@ -756,6 +756,43 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertFalse(response.drag)
     self.assertFalse(response.warmup)
 
+  def test_nonnegative_brake_hold_does_not_learn_its_response_as_coast(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for request in (0.0, 0.03, 0.08):
+      with self.subTest(request=request):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.odyssey_pitch.x = -0.02
+        for frame in range(0, 100, 2):
+          controller.odyssey_coast_response.update(frame, 7, -0.02, 0.1, True, True)
+        controller.frame = 100
+        controller.odyssey_brake_selected = True
+        controller.odyssey_brake_start_frame = 0
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., -0.02, 0.])
+        control.actuators.accel = request
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=22., aEgo=-0.05, canValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=119, odyssey_target_gear=7,
+                             odyssey_user_brake=0., odyssey_computer_braking=False)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        for frame in range(100, 302):
+          if frame == 300:
+            control.actuators.accel = 0.15
+          now = 1_000_000_000 + frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          _, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          if frame % 2:
+            continue
+          signals = parser.vl['ACC_CONTROL']
+          self.assertEqual(signals['BRAKE_REQUEST'], frame < 300)
+          self.assertAlmostEqual(signals['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
+          if frame < 300:
+            self.assertEqual(signals['GAS_COMMAND'], -30000)
+          else:
+            self.assertGreater(signals['GAS_COMMAND'], 0)
+
   def test_nonnegative_braking_requires_an_active_brake_and_qualified_coast(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
