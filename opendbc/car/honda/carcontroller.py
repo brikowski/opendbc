@@ -208,6 +208,9 @@ class OdysseyGasResponse:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
       target = float(np.clip(response_weight * response_gain * min(request - aego, 0.0),
                              lower, 0.0))
+      # Keep issued gas while the new observer warms only if the current response still needs it.
+      if request >= aego:
+        target = float(np.clip(response_weight * self.correction, 0.0, upper))
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
     # Do not carry an unused near-max launch estimate into the next gear.

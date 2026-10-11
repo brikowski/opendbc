@@ -823,6 +823,42 @@ class TestOdysseyLongitudinal(unittest.TestCase):
                           cap_weight=math.nan if change == 'invalid' else 0.)
         self.assertEqual(response.integral, 0.)
 
+  def test_gas_response_preserves_issued_correction_through_observer_warmup(self):
+    for change in ('gear', 'activity', 'grade'):
+      with self.subTest(change=change):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 50):
+          response.update(.2, .1, .04, 20., 6, True, shift_activity=102)
+        issued = response.correction
+        self.assertGreater(issued, 20.)
+        self.assertLess(issued, ODYSSEY_RESPONSE_MAX_COUNTS)
+        gear = 7 if change == 'gear' else 6
+        activity = 110 if change == 'activity' else 102
+        pitch = .02 if change == 'grade' else .04
+        for _ in range(4):
+          correction = response.update(.2, .1, pitch, 20., gear, True, shift_activity=activity)
+          self.assertEqual(correction, issued)
+          self.assertEqual(response.integral, 0.)
+        self.assertLess(response.update(.2, .1, pitch, 20., gear, True, response_weight=0., shift_activity=activity), issued)
+        # Holding an issued correction cannot add gas or exceed current headroom.
+        for _ in range(5):
+          previous = response.correction
+          correction = response.update(.2, .2, pitch, 20., gear, True, shift_activity=activity, limits=(-100., 15.))
+          self.assertLessEqual(correction, previous)
+          self.assertLessEqual(previous - correction, ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertEqual(correction, 15.)
+        # Current excess response still removes gas before the new observer is ready.
+        for _ in range(5):
+          previous = response.correction
+          correction = response.update(.2, .4, pitch, 20., gear, True, shift_activity=activity)
+          self.assertLessEqual(correction, previous)
+          self.assertLessEqual(previous - correction, ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertLess(correction, 0.)
+        self.assertLess(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES)
+        self.assertEqual(response.integral, 0.)
+        self.assertEqual(response.update(.2, .1, pitch, 20., gear, False, shift_activity=activity), 0.)
+        self.assertFalse(response.requests)
+
   def test_gas_response_rejects_falling_grade_and_stale_lead_request(self):
     response = OdysseyGasResponse()
     for frame in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
@@ -914,12 +950,13 @@ class TestOdysseyLongitudinal(unittest.TestCase):
             self.assertGreater(response.correction, 40.)
           if frame == 80:
             self.assertEqual(len(response.requests), 1 if changed else ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
-            self.assertAlmostEqual(response.correction, previous - 10. if changed else previous + .8, delta=1e-5)
+            self.assertAlmostEqual(response.correction, previous if changed else previous + .8, delta=1e-5)
             if changed:
               self.assertEqual(response.integral, 0.)
           if frame == 128 and changed:
             self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES)
-            self.assertEqual(response.correction, 0.)
+            self.assertGreater(response.correction, 40.)
+            self.assertEqual(response.integral, 0.)
           if frame == 130:
             self.assertGreater(response.correction, 0.)
 
