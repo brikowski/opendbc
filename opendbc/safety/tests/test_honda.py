@@ -472,16 +472,6 @@ class TestHondaBoschLongSafety(HondaButtonEnableBase, TestHondaBoschSafetyBase):
         send = (controls_allowed and self.MIN_GAS <= gas <= self.MAX_GAS) or gas == self.NO_GAS
         self.assertEqual(send, self._tx(self._send_gas_brake_msg(gas, accel)), (controls_allowed, gas, accel))
 
-  def test_odyssey_negative_gas_safety_check(self):
-    self.safety.set_safety_hooks(CarParams.SafetyModel.hondaBosch,
-                                 HondaSafetyFlags.BOSCH_LONG | HondaSafetyFlags.ODYSSEY_LONG)
-    self.safety.init_tests()
-    for controls_allowed in (True, False):
-      for gas in (-61, -60, -59, -1, 0, self.MAX_GAS, self.MAX_GAS + 1, self.NO_GAS):
-        self.safety.set_controls_allowed(controls_allowed)
-        send = (controls_allowed and -60 <= gas <= self.MAX_GAS) or gas == self.NO_GAS
-        self.assertEqual(send, self._tx(self._send_gas_brake_msg(gas, 0)), (controls_allowed, gas))
-
   def test_brake_safety_check(self):
     for controls_allowed in [True, False]:
       for accel in np.arange(self.MIN_ACCEL - 1, self.MAX_ACCEL + 1, 0.01):
@@ -498,6 +488,15 @@ class TestHondaBoschLongSafety(HondaButtonEnableBase, TestHondaBoschSafetyBase):
         msg = self.packer.make_can_msg_safety("ACC_CONTROL", self.PT_BUS, values)
         self.assertFalse(self._tx(msg), msg=aeb_signals)
       self.assertTrue(self._tx(self._send_gas_brake_msg(self.NO_GAS, 0)))
+
+
+class TestHondaBoschLongAltBrakeSafety(TestHondaBoschLongSafety, TestHondaBoschAltBrakeSafetyBase):
+  SAFETY_PARAM = HondaSafetyFlags.BOSCH_LONG | HondaSafetyFlags.ALT_BRAKE
+
+
+class TestHondaBoschLongOdysseySafety(TestHondaBoschLongAltBrakeSafety):
+  SAFETY_PARAM = TestHondaBoschLongAltBrakeSafety.SAFETY_PARAM | HondaSafetyFlags.ODYSSEY_LONG
+  MIN_GAS = -60
 
 
 class TestHondaBoschRadarlessSafetyBase(TestHondaBoschSafetyBase):
