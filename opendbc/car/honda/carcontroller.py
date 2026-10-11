@@ -211,6 +211,8 @@ class OdysseyGasResponse:
       # Keep issued gas while the new observer warms only if the current response still needs it.
       if request >= aego:
         target = float(np.clip(response_weight * self.correction, 0.0, upper))
+      # Carry the held command into feedback so finishing warmup does not remove it.
+      self.integral = max(target, 0.0)
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
     # Do not carry an unused near-max launch estimate into the next gear.

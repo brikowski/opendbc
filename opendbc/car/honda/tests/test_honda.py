@@ -808,20 +808,39 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         mapped = values[0] + (gas_request - bp[0]) / (bp[-1] - bp[0]) * (values[-1] - values[0])
         self.assertAlmostEqual(output.gas, odyssey_low_speed_gas_command(mapped, next_request, state.vEgo), delta=1e-4)
 
-  def test_gas_response_drops_retained_offset_with_observer_validity(self):
-    for change in ('gear', 'activity', 'grade', 'inactive', 'invalid', 'unused'):
+  def test_gas_response_drops_retained_offset_when_feedback_is_invalid(self):
+    for change in ('inactive', 'invalid', 'unused'):
       with self.subTest(change=change):
         response = OdysseyGasResponse()
         for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 100):
           response.update(.2, 0., .04, 20., 6, True, shift_activity=102)
         self.assertGreater(response.integral, 0.)
         for _ in range(10):
-          response.update(.2, .2, .02 if change == 'grade' else .04, 20.,
-                          7 if change == 'gear' else 6, change != 'inactive',
+          response.update(.2, .2, .04, 20., 6, change != 'inactive',
                           response_weight=0. if change == 'unused' else 1.,
-                          shift_activity=110 if change == 'activity' else 102,
+                          shift_activity=102,
                           cap_weight=math.nan if change == 'invalid' else 0.)
         self.assertEqual(response.integral, 0.)
+
+  def test_gas_response_does_not_reintroduce_error_after_observer_warmup(self):
+    # Keep the illustrative plant unchanged to isolate the observer's state transition.
+    for gain in (.001, .003):
+      for change in ('gear', 'activity', 'grade'):
+        with self.subTest(gain=gain, change=change):
+          response = OdysseyGasResponse()
+          achieved = .14
+          delay = deque([achieved] * 25)
+          errors = []
+          for frame in range(2200):
+            changed = frame >= 2000
+            correction = response.update(.2, achieved, .02 if changed and change == 'grade' else .04,
+                                         20., 7 if changed and change == 'gear' else 6, True,
+                                         shift_activity=110 if changed and change == 'activity' else 102)
+            delay.append(.2 - .06 + gain * correction)
+            achieved += (delay.popleft() - achieved) * .02 / (.15 + .02)
+            if changed:
+              errors.append(abs(.2 - achieved))
+          self.assertLess(max(errors), .003)
 
   def test_gas_response_preserves_issued_correction_through_observer_warmup(self):
     for change in ('gear', 'activity', 'grade'):
@@ -838,14 +857,16 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         for _ in range(4):
           correction = response.update(.2, .1, pitch, 20., gear, True, shift_activity=activity)
           self.assertEqual(correction, issued)
-          self.assertEqual(response.integral, 0.)
+          self.assertEqual(response.integral, correction)
         self.assertLess(response.update(.2, .1, pitch, 20., gear, True, response_weight=0., shift_activity=activity), issued)
+        self.assertEqual(response.integral, 0.)
         # Holding an issued correction cannot add gas or exceed current headroom.
         for _ in range(5):
           previous = response.correction
           correction = response.update(.2, .2, pitch, 20., gear, True, shift_activity=activity, limits=(-100., 15.))
           self.assertLessEqual(correction, previous)
           self.assertLessEqual(previous - correction, ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertLessEqual(response.integral, 15.)
         self.assertEqual(correction, 15.)
         # Current excess response still removes gas before the new observer is ready.
         for _ in range(5):
@@ -952,13 +973,15 @@ class TestOdysseyLongitudinal(unittest.TestCase):
             self.assertEqual(len(response.requests), 1 if changed else ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
             self.assertAlmostEqual(response.correction, previous if changed else previous + .8, delta=1e-5)
             if changed:
-              self.assertEqual(response.integral, 0.)
+              self.assertEqual(response.integral, response.correction)
           if frame == 128 and changed:
             self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES)
             self.assertGreater(response.correction, 40.)
-            self.assertEqual(response.integral, 0.)
+            self.assertEqual(response.integral, response.correction)
           if frame == 130:
             self.assertGreater(response.correction, 0.)
+            if changed:
+              self.assertGreaterEqual(response.correction, previous)
 
   def test_odyssey_low_speed_feedback_is_bounded_and_survives_speed_entry(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
