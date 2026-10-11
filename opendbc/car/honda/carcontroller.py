@@ -186,7 +186,7 @@ class OdysseyGasResponse:
 
     response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                         ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
-    # Gas reduction is bounded by the mapped command; added gas and retained offset stay bounded.
+    # Gas reduction and its retained offset use mapped headroom; added gas remains bounded.
     lower = limits[0]
     upper = min(ODYSSEY_RESPONSE_MAX_COUNTS, limits[1])
     target = 0.0
@@ -197,7 +197,7 @@ class OdysseyGasResponse:
       residual = float(np.clip(residual, min(request - aego, 0.0), max(request - aego, 0.0)))
       proportional = response_gain * residual
       integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
-                                -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
+                                lower, ODYSSEY_RESPONSE_MAX_COUNTS))
       target = response_weight * (proportional + integral)
       # Retain the offset at zero error without accumulating beyond usable gas authority.
       if lower <= target <= upper or (target > upper and residual < 0.0) or (target < lower and residual > 0.0):

@@ -610,8 +610,9 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           correction = response.update(.2, 1.2, 0., 20., 6, True, limits=(-available, 700.))
           self.assertGreaterEqual(correction, -available)
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
-          self.assertLessEqual(abs(response.integral), ODYSSEY_RESPONSE_MAX_COUNTS)
-        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
+          self.assertGreaterEqual(response.integral, -available)
+          self.assertLessEqual(response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
+        for _ in range(math.ceil(available / ODYSSEY_RESPONSE_SLEW_COUNTS) + ODYSSEY_RESPONSE_DELAY_FRAMES):
           previous = response.correction
           correction = response.update(.2, .2, 0., 20., 7, True, limits=(-available, 700.))
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
@@ -694,10 +695,10 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertGreater(direction * correction, 10.)
         self.assertLess(abs(correction), ODYSSEY_RESPONSE_MAX_COUNTS)
 
-  def test_gas_response_converges_after_request_change(self):
+  def test_gas_response_converges_after_request_change_with_available_headroom(self):
     # Illustrative delayed plant: a convergence regression, not an identified Honda gas gain.
     for gain in (.001, .003):
-      for bias in (-.06, .06):
+      for bias in (-.06, .06, .3):
         for cap in (0., 1.):
           with self.subTest(gain=gain, bias=bias, cap=cap):
             response = OdysseyGasResponse()
@@ -707,7 +708,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
             errors = []
             for frame in range(2000):
               request = .2 if frame < 1000 else .1
-              correction = response.update(request, achieved, 0., 20., 6, True, cap_weight=cap)
+              correction = response.update(request, achieved, 0., 20., 6, True, cap_weight=cap, limits=(-600., 100.))
               command = request + gain * correction
               if frame == 1000:
                 self.assertLess(command, previous_command)
@@ -717,6 +718,20 @@ class TestOdysseyLongitudinal(unittest.TestCase):
               if frame >= 1900:
                 errors.append(abs(request - achieved))
             self.assertLess(sum(errors) / len(errors), .003)
+
+  def test_gas_response_retained_reduction_follows_available_headroom(self):
+    response = OdysseyGasResponse()
+    for _ in range(300):
+      response.update(.2, .4, 0., 20., 6, True, limits=(-600., 100.))
+    self.assertLess(response.integral, -ODYSSEY_RESPONSE_MAX_COUNTS)
+    for _ in range(30):
+      previous = response.correction
+      correction = response.update(.2, .2, 0., 20., 6, True, limits=(-50., 100.))
+      self.assertGreaterEqual(response.integral, -50.)
+      self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+    self.assertEqual(correction, -50.)
+    self.assertEqual(response.update(.2, .2, 0., 20., 6, False), 0.)
+    self.assertEqual(response.integral, 0.)
 
   def test_gas_response_saturation_unwinds_without_storing_excess(self):
     for direction in (-1, 1):
