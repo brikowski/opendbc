@@ -170,8 +170,9 @@ class OdysseyGasResponse:
     self.pitch_peak = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
-  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0, shift_activity=0):
-    if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, response_weight)) or
+  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0, shift_activity=0,
+             limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS)):
+    if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, response_weight, *limits)) or
         not 1 <= gear <= 10):
       self.reset()
       return 0.0
@@ -185,6 +186,8 @@ class OdysseyGasResponse:
 
     response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                         ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
+    lower = max(-ODYSSEY_RESPONSE_MAX_COUNTS, limits[0])
+    upper = min(ODYSSEY_RESPONSE_MAX_COUNTS, limits[1])
     target = 0.0
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
       delayed_request = self.requests[0]
@@ -195,15 +198,15 @@ class OdysseyGasResponse:
       integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
                                 -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
       target = response_weight * (proportional + integral)
-      # Retain the required offset at zero error without accumulating against the correction rail.
-      if abs(target) <= ODYSSEY_RESPONSE_MAX_COUNTS or target * residual < 0.0:
+      # Retain the offset at zero error without accumulating beyond usable gas authority.
+      if lower <= target <= upper or (target > upper and residual < 0.0) or (target < lower and residual > 0.0):
         self.integral = integral
       target = float(np.clip(response_weight * (proportional + self.integral),
-                             -ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS))
+                             lower, upper))
     else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
       target = float(np.clip(response_weight * response_gain * min(request - aego, 0.0),
-                             -ODYSSEY_RESPONSE_MAX_COUNTS, 0.0))
+                             lower, 0.0))
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
     # Do not carry an unused near-max launch estimate into the next gear.
@@ -618,9 +621,11 @@ class CarController(CarControllerBase):
               # The gas map approaches its rail during a low-gear launch; taper feedback there.
               gas_max_accel = self.params.BOSCH_GAS_LOOKUP_BP[-1]
               response_weight = float(np.clip((0.75 * gas_max_accel - accel) / (0.25 * gas_max_accel), 0.0, 1.0))
+            available_gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
-                                                            cap_weight, response_weight, CS.odyssey_shift_activity)
+                                                            cap_weight, response_weight, CS.odyssey_shift_activity,
+                                                            limits=(-available_gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas))
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
             if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
