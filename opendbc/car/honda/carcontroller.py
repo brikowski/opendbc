@@ -295,7 +295,7 @@ class OdysseyGasCoastRelease:
         ODYSSEY_ROAD_BRAKE_ENTRY < request and
         downhill_gravity > ODYSSEY_COAST_RELEASE_GRAVITY and
         aego - request > ODYSSEY_COAST_RELEASE_ERROR and
-        # With no coast history, release only after bounded gas feedback has reached the zero floor.
+        # With no coast history, release only after the issued gas command has reached zero.
         ((passive_accel is not None and passive_accel - request > ODYSSEY_COAST_RELEASE_ERROR) or
          (passive_accel is None and request < 0.0 and gas_floor and request_slope < -0.20))):
       self.active = True
@@ -522,6 +522,7 @@ class CarController(CarControllerBase):
 
         if self.CP.flags & HondaFlags.BOSCH:
           self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
+          previous_gas_command = self.gas
           self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
           stopping = actuators.longControlState == LongCtrlState.stopping
           gas_domain = None
@@ -553,7 +554,7 @@ class CarController(CarControllerBase):
               coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0 and
               CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
               0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000,
-              self.gas + self.odyssey_gas_response.correction <= 0.0)
+              previous_gas_command == 0.0)
             release_brake = odyssey_brake_release(
               now_nanos, accel, CS.out.aEgo, CS.odyssey_computer_braking, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,

@@ -1268,6 +1268,39 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
     self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], -0.14, delta=0.01)
 
+  def test_downhill_coast_waits_for_the_issued_zero_gas_command(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for request, achieved, pitch, next_request, expected in (
+      (.05, .5, -.03, -.01, (-30000, -30000)),
+      (.5, .9, -.03, -.01, (0, -30000)),
+      (-.001, .5, -.0256, -.048, (-60, -60)),
+    ):
+      with self.subTest(request=request):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.odyssey_pitch.x = pitch
+        state = structs.CarState(vEgo=21., aEgo=achieved, canValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_target_gear=7, odyssey_shift_activity=119,
+                             odyssey_user_brake=0., odyssey_computer_braking=False)
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., pitch, 0.])
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        observed = []
+        for frame in range(154):
+          control.actuators.accel = request if frame < 150 else next_request
+          now = 1_000_000_000 + frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          _, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, sends)])
+          if frame >= 150 and frame % 2 == 0:
+            signals = parser.vl['ACC_CONTROL']
+            observed.append(signals['GAS_COMMAND'])
+            self.assertEqual(signals['BRAKE_REQUEST'], 0)
+            self.assertAlmostEqual(signals['ACCEL_COMMAND'], next_request, delta=.005)
+        self.assertFalse(controller.odyssey_coast_response.drag)
+        self.assertEqual(tuple(observed), expected)
+
   def test_manual_coast_estimate_is_ready_at_longitudinal_engagement(self):
     from opendbc.safety.tests.libsafety import libsafety_py
 
