@@ -186,7 +186,8 @@ class OdysseyGasResponse:
 
     response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                         ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
-    lower = max(-ODYSSEY_RESPONSE_MAX_COUNTS, limits[0])
+    # Gas reduction is bounded by the mapped command; added gas and retained offset stay bounded.
+    lower = limits[0]
     upper = min(ODYSSEY_RESPONSE_MAX_COUNTS, limits[1])
     target = 0.0
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:

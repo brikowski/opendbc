@@ -590,6 +590,67 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(response.update(.1, .1, .02, 20.0, 7, True), 0.0)
     self.assertLess(response.update(.11, .4, .02, 20.0, 7, True), 0.0)
 
+  def test_gas_response_can_remove_available_gas_during_startup(self):
+    for available in (60., 600.):
+      with self.subTest(available=available):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
+          previous = response.correction
+          correction = response.update(.2, 1.2, 0., 20., 6, True, limits=(-available, 700.))
+          self.assertGreaterEqual(correction, -available)
+          self.assertLessEqual(correction, 0.)
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertEqual(response.integral, 0.)
+        if available > ODYSSEY_RESPONSE_MAX_COUNTS:
+          self.assertLess(correction, -ODYSSEY_RESPONSE_MAX_COUNTS)
+        else:
+          self.assertEqual(correction, -available)
+        for _ in range(100):
+          previous = response.correction
+          correction = response.update(.2, 1.2, 0., 20., 6, True, limits=(-available, 700.))
+          self.assertGreaterEqual(correction, -available)
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertLessEqual(abs(response.integral), ODYSSEY_RESPONSE_MAX_COUNTS)
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
+          previous = response.correction
+          correction = response.update(.2, .2, 0., 20., 7, True, limits=(-available, 700.))
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertLessEqual(correction, 0.)
+        self.assertEqual(correction, 0.)
+        for _ in range(100):
+          correction = response.update(.2, -.8, 0., 20., 7, True, limits=(-available, 700.))
+          self.assertLessEqual(correction, ODYSSEY_RESPONSE_MAX_COUNTS)
+
+  def test_gas_feedback_reaches_zero_without_changing_acceleration(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    controller = CarController({Bus.pt: dbc}, CP)
+    controller.odyssey_pitch.x = -.03
+    state = structs.CarState(vEgo=20., aEgo=.9, canValid=True)
+    CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                         odyssey_car_gas=.1, odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=7,
+                         odyssey_shift_activity=119, odyssey_target_gear_ts_nanos=0,
+                         odyssey_user_brake=0., odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
+    control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., -.03, 0.])
+    control.actuators.accel = .1
+    control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+    parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+    for frame in range(120):
+      now = 1_000_000_000 + frame * 10_000_000
+      CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+      previous = controller.odyssey_gas_response.correction
+      output, sends = controller.update(control.as_reader(), CS, now)
+      parser.update([(now, sends)])
+      self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], .1, delta=.005)
+      self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+      self.assertAlmostEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], output.gas, delta=1.)
+      self.assertGreaterEqual(output.gas, 0.)
+      response = controller.odyssey_gas_response
+      self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+      self.assertLessEqual(abs(response.integral), ODYSSEY_RESPONSE_MAX_COUNTS)
+    self.assertLess(response.correction, -ODYSSEY_RESPONSE_MAX_COUNTS)
+    self.assertEqual(output.gas, 0.)
+
   def test_gas_response_uses_latest_tracking_error_with_delayed_feedback(self):
     for request, aego, direction in ((.7, .9, -1), (.3, .1, 1)):
       with self.subTest(request=request):
