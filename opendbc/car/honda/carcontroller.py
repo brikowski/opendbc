@@ -530,7 +530,8 @@ class CarController(CarControllerBase):
           if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
             previous_gas = self.odyssey_gas_selected
             # Inactive brake feedback represents passive response only after the command settles.
-            settled_brake = (self.odyssey_brake_selected and self.odyssey_brake_start_frame is not None and
+            settled_brake = ((self.odyssey_brake_selected or self.odyssey_coast_response.gear == CS.odyssey_target_gear) and
+                             self.odyssey_brake_start_frame is not None and
                              self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
             coast_observation_eligible = (not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
                                           0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
@@ -545,7 +546,7 @@ class CarController(CarControllerBase):
               self.frame, CS.odyssey_target_gear, self.odyssey_pitch.x, CS.out.aEgo,
               # A nonnegative brake hold is controlled response, not a passive coast observation.
               not previous_gas and (not self.odyssey_brake_selected or
-                                    (settled_brake and accel < 0.0 and abs(CS.odyssey_user_brake) <= 0.015625)) and
+                                    (settled_brake and accel < 0.0)) and abs(CS.odyssey_user_brake) <= 0.015625 and
               CS.odyssey_car_gas == 0.0 and
               not CS.odyssey_computer_braking, (coast_eligible or manual_coast_eligible) and coast_state_valid)
             release_gas = self.odyssey_gas_coast_release.update(
@@ -597,14 +598,16 @@ class CarController(CarControllerBase):
                                                                       gas_accel, release_brake, release_gas,
                                                                       passive_accel if passive_response_eligible else None)
             # A released brake command can precede the received brake feedback returning to idle.
-            if (gas_selected and not previous_gas and coast_eligible and coast_state_valid and
-                8.0 <= CS.out.vEgo <= 35.0 and
-                (CS.odyssey_computer_braking or
-                 (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625))):
+            waiting_for_brake_release = (gas_selected and not previous_gas and coast_eligible and coast_state_valid and
+                                         8.0 <= CS.out.vEgo <= 35.0 and
+                                         (CS.odyssey_computer_braking or
+                                          (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625)))
+            if waiting_for_brake_release:
               gas_selected = False
+            # Keep settled brake history through the feedback wait; a new brake request starts a new interval.
             if brake_selected and not self.odyssey_brake_selected:
               self.odyssey_brake_start_frame = self.frame
-            elif not brake_selected:
+            elif not brake_selected and not waiting_for_brake_release:
               self.odyssey_brake_start_frame = None
             self.odyssey_brake_selected = CC.longActive and brake_selected
             self.odyssey_gas_selected = gas_selected
