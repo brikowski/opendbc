@@ -581,7 +581,9 @@ class CarController(CarControllerBase):
                              self.frame - coast_start >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
             passive_gas = (passive_response_eligible and accel < 0.0 and passive_accel < accel and
                            not CS.odyssey_computer_braking and
-                           ((previous_gas and CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR) or
+                           ((previous_gas and (CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR or
+                                              (accel > ODYSSEY_ROAD_BRAKE_ENTRY and not self.odyssey_gas_bridge_active and
+                                               passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR))) or
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              (settled_coast or settled_brake))))
