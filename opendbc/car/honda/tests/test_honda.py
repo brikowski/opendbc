@@ -1938,15 +1938,16 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         continue
       parser.update([(now, messages)])
       values = parser.vl['ACC_CONTROL']
-      self.assertEqual(values['BRAKE_REQUEST'], frame != 56)
-      self.assertEqual(values['GAS_COMMAND'] == -30000, frame != 56)
+      # Settled gas authority survives a brief response transient.
+      self.assertEqual(values['BRAKE_REQUEST'], 0)
+      self.assertGreaterEqual(values['GAS_COMMAND'], 0)
 
   def test_passive_gas_floor_feedback_delay_continuity_and_brake_fallback(self):
     from opendbc.safety.tests.libsafety import libsafety_py
 
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for change in ('none', 'at_target', 'approaching_passive', 'excess', 'stronger'):
+    for change in ('none', 'at_target', 'approaching_passive', 'transient', 'excess', 'stronger'):
       with self.subTest(change=change):
         controller = CarController({Bus.pt: dbc}, CP)
         controller.frame = 100
@@ -1973,7 +1974,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         safety.set_controls_allowed(True)
         last_gas = 0
         first_positive = None
-        for frame in range(100, 202):
+        first_excess_brake = None
+        for frame in range(100, 222):
           now = 2_000_000_000 + (frame - 100) * 10_000_000
           CS.odyssey_engine_torque_ts_nanos = now - 10_000_000
           CS.odyssey_target_gear_ts_nanos = now - 10_000_000
@@ -1986,6 +1988,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
               state.aEgo = -0.7
             elif change == 'excess':
               state.aEgo = 0.0
+            elif change == 'transient':
+              state.aEgo = 0.0 if frame < 172 else -0.8
             elif change == 'stronger':
               control.actuators.accel = -0.95
           output, sends = controller.update(control.as_reader(), CS, now)
@@ -1999,7 +2003,9 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           gas, brake = values['GAS_COMMAND'], values['BRAKE_REQUEST']
           self.assertFalse(gas > -30000 and brake)
           self.assertAlmostEqual(output.accel, values['ACCEL_COMMAND'], delta=0.01)
-          if frame >= 160 and change in ('excess', 'stronger'):
+          if frame >= 160 and change == 'excess' and brake and first_excess_brake is None:
+            first_excess_brake = frame
+          if frame >= 160 and (change == 'stronger' or (change == 'excess' and first_excess_brake is not None)):
             self.assertEqual(gas, -30000)
             self.assertEqual(brake, 1)
           else:
@@ -2018,14 +2024,18 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertEqual(first_positive, 100 + 2 * (ODYSSEY_RESPONSE_DELAY_FRAMES + 1))
         if change == 'none':
           self.assertGreater(last_gas, 0)
+        if change == 'excess':
+          self.assertIsNotNone(first_excess_brake)
+          self.assertLessEqual(first_excess_brake, 160 + 2 * ODYSSEY_RESPONSE_DELAY_FRAMES + 2)
 
-  def test_mild_request_does_not_cycle_gas_when_coast_would_undershoot(self):
+  def test_gas_continuity_does_not_cycle_on_transient_response(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for blocked in (None, 'stronger', 'boundary', 'bridge', 'no_history', 'forecast', 'weak_forecast', 'gear',
-                    'stale_engine', 'stale_gear', 'stale_VSA', 'invalid_CAN', 'pose', 'gas_pedal',
-                    'brake_pedal', 'inactive', 'not_pid', 'low_speed', 'high_speed', 'received_brake'):
-      with self.subTest(blocked=blocked):
+    for request, blocked in product((-.26, -.30, -.31, -.5),
+                                   (None, 'latest_error', 'activity', 'stronger', 'bridge', 'no_history', 'forecast', 'at_forecast', 'gear',
+                                    'stale_engine', 'stale_gear', 'stale_VSA', 'invalid_CAN', 'pose', 'gas_pedal',
+                                    'brake_pedal', 'inactive', 'not_pid', 'low_speed', 'high_speed', 'received_brake')):
+      with self.subTest(request=request, blocked=blocked):
         controller = CarController({Bus.pt: dbc}, CP)
         controller.frame = 100
         controller.odyssey_gas_selected = True
@@ -2062,19 +2072,23 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         for frame in range(100, 160):
           step(frame)
         self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
-        control.actuators.accel, state.aEgo = -0.26, 0.3
-        if blocked == 'stronger':
-          control.actuators.accel = -0.31
-        elif blocked == 'boundary':
-          control.actuators.accel = ODYSSEY_ROAD_BRAKE_ENTRY
+        control.actuators.accel, state.aEgo = request, 0.3
+        if blocked in ('latest_error', 'activity'):
+          controller.odyssey_gas_response.error.x = -1.
+          if blocked == 'latest_error':
+            state.aEgo = control.actuators.accel
+          else:
+            CS.odyssey_shift_activity = 1
+        elif blocked == 'stronger':
+          control.actuators.accel = -0.65
         elif blocked == 'bridge':
           controller.odyssey_gas_bridge_active = True
         elif blocked == 'no_history':
           controller.odyssey_coast_response.drag.clear()
         elif blocked == 'forecast':
           controller.odyssey_coast_response.drag[7] = -0.1
-        elif blocked == 'weak_forecast':
-          controller.odyssey_coast_response.drag[7] = -0.35
+        elif blocked == 'at_forecast':
+          controller.odyssey_coast_response.drag[7] = control.actuators.accel
         elif blocked == 'gear':
           CS.odyssey_target_gear = 8
         elif blocked == 'invalid_CAN':
@@ -2096,24 +2110,25 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         elif blocked == 'received_brake':
           CS.odyssey_computer_braking = True
         for frame in range(160, 201):
-          if blocked is None and frame == 172:
+          if blocked in (None, 'latest_error', 'activity') and frame == 172:
             state.aEgo = -0.6
-          if blocked is None and frame == 200:
-            control.actuators.accel, state.aEgo = -0.5, 0.3
+          if blocked in (None, 'latest_error', 'activity') and frame == 200:
+            control.actuators.accel, state.aEgo = -0.65, 0.3
           values = step(frame)
           if frame % 2:
             continue
-          if blocked is None and frame < 200:
+          if blocked in (None, 'latest_error', 'activity') and frame < 200:
             self.assertGreaterEqual(values['GAS_COMMAND'], 0)
             self.assertEqual(values['BRAKE_REQUEST'], 0)
-            self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+            if blocked != 'activity':
+              self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
             if frame <= 170:
               self.assertEqual(values['GAS_COMMAND'], 0)
-            if frame == 198:
+            if frame == 198 and blocked is None:
               self.assertGreater(values['GAS_COMMAND'], 0)
           else:
             self.assertEqual(values['GAS_COMMAND'], -30000)
-            self.assertEqual(values['BRAKE_REQUEST'], blocked in ('stronger', 'boundary') or (blocked is None and frame == 200))
+            self.assertEqual(values['BRAKE_REQUEST'], control.longActive and control.actuators.accel < ODYSSEY_ROAD_BRAKE_ENTRY)
 
   def test_prior_coast_response_braking_cancels_gas_preactivation(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

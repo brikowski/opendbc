@@ -581,11 +581,12 @@ class CarController(CarControllerBase):
             coast_start = self.odyssey_coast_response.coast_start
             settled_coast = (not self.odyssey_brake_selected and coast_start is not None and
                              self.frame - coast_start >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
+            response_excess = (self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
+                               self.odyssey_gas_response.error.x < -ODYSSEY_COAST_RELEASE_ERROR)
             passive_gas = (passive_response_eligible and accel < 0.0 and passive_accel < accel and
                            not CS.odyssey_computer_braking and
                            ((previous_gas and (CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR or
-                                              (accel > ODYSSEY_ROAD_BRAKE_ENTRY and not self.odyssey_gas_bridge_active and
-                                               passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR))) or
+                                              (not response_excess and not self.odyssey_gas_bridge_active))) or
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              (settled_coast or settled_brake))))
