@@ -92,6 +92,10 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
           self.assertEqual(output, direction * 3500)
           self.assertEqual(authority.limit(direction * 4200, curvature, current, speed, True, 3840), direction * 3840)
           self.assertEqual(authority.limit(direction * 2700, curvature, current, speed, True, 3840), direction * 2700)
+          # Convergence leaves the controller's continuing request in charge of torque.
+          for remaining_error in (0.09, 0.0, -0.2):
+            current = curvature - direction * remaining_error / speed**2
+            self.assertEqual(authority.limit(direction * 3500, curvature, current, speed, True, 3840), direction * 3500)
           # Falling demand closes the gate; a renewed request must qualify again.
           self.assertEqual(authority.limit(direction * 2000, curvature, current, speed, True, 3840), direction * 2000)
           self.assertEqual(authority.limit(direction * 3500, curvature, current, speed, True, 3840), direction * 2560)
@@ -116,7 +120,38 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
         self.assertEqual(command(2.4, 0.7), direction * 3840)
         self.assertEqual(command(2.6, 0.7), direction * 3840)
         self.assertEqual(command(3.1, 1.0), direction * 3840)
-        self.assertEqual(command(3.1, 0.0), direction * 2560)
+        self.assertEqual(command(3.1, 0.0), direction * 3840)
+
+  def test_qualified_authority_closes_on_ineligible_state(self):
+    for direction in (-1, 1):
+      speed = 22.0
+      curvature = direction * 1.8 / speed**2
+      current = curvature - direction * 0.3 / speed**2
+      for changed in ({'speed': 14.9}, {'speed': 33.1}, {'speed': math.nan}, {'eligible': False},
+                      {'curvature': 0.0}, {'curvature': -curvature}, {'current_curvature': math.nan},
+                      {'requested': -direction * 3500}, {'requested': direction * 2500}):
+        with self.subTest(direction=direction, changed=changed):
+          authority = OdysseySteeringAuthority()
+          args = dict(requested=direction * 3500, curvature=curvature, current_curvature=current,
+                      speed=speed, eligible=True, maximum=3840)
+          for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+            authority.limit(**args)
+          self.assertEqual(authority.limit(**args), direction * 3500)
+          output = authority.limit(**(args | changed))
+          self.assertLessEqual(abs(output), 2560)
+          self.assertEqual(authority.error_frames, 0)
+          self.assertEqual(authority.limit(**args), direction * 2560)
+
+  def test_qualification_requires_consecutive_error(self):
+    authority = OdysseySteeringAuthority()
+    speed = 22.0
+    curvature = 1.8 / speed**2
+    for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
+      self.assertEqual(authority.limit(3500, curvature, curvature - 0.3 / speed**2, speed, True, 3840), 2560)
+    self.assertEqual(authority.limit(3500, curvature, curvature, speed, True, 3840), 2560)
+    for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
+      self.assertEqual(authority.limit(3500, curvature, curvature - 0.3 / speed**2, speed, True, 3840), 2560)
+    self.assertEqual(authority.limit(3500, curvature, curvature - 0.3 / speed**2, speed, True, 3840), 3500)
 
   def test_steering_wire_preserves_persistent_request_through_ramp_and_turn_exit(self):
     from opendbc.safety.tests.libsafety import libsafety_py
@@ -142,12 +177,14 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
                              odyssey_engine_torque_ts_nanos=0, odyssey_shift_activity=0, odyssey_target_gear=0,
                              odyssey_user_brake=0., odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
         counts = []
-        for frame in range(190):
+        for frame in range(200):
           demand = 1.4 if frame < 100 else 1.25
           control.actuators.curvature = direction * demand / state.vEgo**2
           control.currentCurvature = direction * (demand - 0.4) / state.vEgo**2
           if frame >= 160:
             control.currentCurvature = control.actuators.curvature
+          if frame >= 175:
+            control.actuators.torque = -direction * 0.5
           output, sends = controller.update(control.as_reader(), CS, frame * 10_000_000)
           steering = [(addr, dat, src) for addr, dat, src in sends if addr == 0xE4 and src == bus]
           self.assertEqual(len(steering), 1)
@@ -157,13 +194,11 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
           counts.append(parser.vl['STEERING_CONTROL']['STEER_TORQUE'])
           self.assertEqual(counts[-1], output.torqueOutputCan)
           self.assertLessEqual(abs(counts[-1]), 3840)
-          if 100 <= frame < 160:
+          if 100 <= frame < 175:
             self.assertAlmostEqual(counts[-1], counts[99], delta=1)
-          if frame >= 160:
-            self.assertGreaterEqual(abs(counts[-1]), 2560)
         self.assertGreater(abs(counts[34]), 2560)
         self.assertGreater(abs(counts[99]), 3000)
-        self.assertEqual(abs(counts[-1]), 2560)
+        self.assertEqual(abs(counts[-1]), 1920)
         self.assertLessEqual(max(abs(b - a) for a, b in zip(counts, counts[1:], strict=False)), 77)
 
   def test_steering_wire_and_output_follow_bounded_authority_in_both_bus_modes(self):
