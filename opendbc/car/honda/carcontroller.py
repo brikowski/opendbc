@@ -172,9 +172,9 @@ class OdysseyGasResponse:
     self.pitch_peak = None
     self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
 
-  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, response_weight=1.0, shift_activity=0,
+  def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, shift_activity=0,
              limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS)):
-    if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, response_weight, *limits)) or
+    if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, *limits)) or
         not 1 <= gear <= 10):
       self.reset()
       return 0.0
@@ -200,26 +200,21 @@ class OdysseyGasResponse:
       proportional = response_gain * residual
       integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
                                 lower, ODYSSEY_RESPONSE_MAX_COUNTS))
-      target = response_weight * (proportional + integral)
+      target = proportional + integral
       # Retain the offset at zero error without accumulating beyond usable gas authority.
       if lower <= target <= upper or (target > upper and residual < 0.0) or (target < lower and residual > 0.0):
         self.integral = integral
-      target = float(np.clip(response_weight * (proportional + self.integral),
-                             lower, upper))
+      target = float(np.clip(proportional + self.integral, lower, upper))
     else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
-      target = float(np.clip(response_weight * response_gain * min(request - aego, 0.0),
-                             lower, 0.0))
+      target = float(np.clip(response_gain * min(request - aego, 0.0), lower, 0.0))
       # Keep issued gas while the new observer warms only if the current response still needs it.
       if request >= aego:
-        target = float(np.clip(response_weight * self.correction, 0.0, upper))
+        target = float(np.clip(self.correction, 0.0, upper))
       # Carry the held command into feedback so finishing warmup does not remove it.
       self.integral = max(target, 0.0)
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
-    # Do not carry an unused near-max launch estimate into the next gear.
-    if response_weight == 0.0 and self.correction == 0.0:
-      self.clear_observer()
     return self.correction
 
 
@@ -628,15 +623,10 @@ class CarController(CarControllerBase):
                                  CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
                                  0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
                                  CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and (self.gas > 0.0 or passive_gas))
-            response_weight = 1.0
-            if CS.out.vEgo < 8.0:
-              # The gas map approaches its rail during a low-gear launch; taper feedback there.
-              gas_max_accel = self.params.BOSCH_GAS_LOOKUP_BP[-1]
-              response_weight = float(np.clip((0.75 * gas_max_accel - accel) / (0.25 * gas_max_accel), 0.0, 1.0))
             available_gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
-                                                            cap_weight, response_weight, CS.odyssey_shift_activity,
+                                                            cap_weight, CS.odyssey_shift_activity,
                                                             limits=(-available_gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas))
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))

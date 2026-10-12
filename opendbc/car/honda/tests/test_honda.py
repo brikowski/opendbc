@@ -785,10 +785,6 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
           self.assertLessEqual(abs(response.correction), ODYSSEY_RESPONSE_MAX_COUNTS)
         self.assertLess(direction * response.correction, 0.)
-        response.reset()
-        for _ in range(300):
-          response.update(.2, .2 - direction * .3, 0., 20., 6, True, response_weight=.1)
-          self.assertLessEqual(abs(response.integral), ODYSSEY_RESPONSE_MAX_COUNTS)
 
   def test_gas_response_does_not_store_unavailable_correction(self):
     for direction, limits in ((-1, (-5., 100.)), (1, (-100., 5.))):
@@ -847,7 +843,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertAlmostEqual(output.gas, odyssey_low_speed_gas_command(mapped, next_request, state.vEgo), delta=1e-4)
 
   def test_gas_response_drops_retained_offset_when_feedback_is_invalid(self):
-    for change in ('inactive', 'invalid', 'unused'):
+    for change in ('inactive', 'invalid'):
       with self.subTest(change=change):
         response = OdysseyGasResponse()
         for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 100):
@@ -855,7 +851,6 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertGreater(response.integral, 0.)
         for _ in range(10):
           response.update(.2, .2, .04, 20., 6, change != 'inactive',
-                          response_weight=0. if change == 'unused' else 1.,
                           shift_activity=102,
                           cap_weight=math.nan if change == 'invalid' else 0.)
         self.assertEqual(response.integral, 0.)
@@ -896,7 +891,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           correction = response.update(.2, .1, pitch, 20., gear, True, shift_activity=activity)
           self.assertEqual(correction, issued)
           self.assertEqual(response.integral, correction)
-        self.assertLess(response.update(.2, .1, pitch, 20., gear, True, response_weight=0., shift_activity=activity), issued)
+        self.assertLess(response.update(.2, .1, pitch, 20., gear, True, shift_activity=activity, limits=(-100., 0.)), issued)
         self.assertEqual(response.integral, 0.)
         # Holding an issued correction cannot add gas or exceed current headroom.
         for _ in range(5):
@@ -1063,21 +1058,24 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     state.vEgo = 8.0
     self.assertLessEqual(abs(step(100) - values[-1]), 10)
 
-    high, _, _, high_values = run(1.95, 2.25, 7.0)
-    self.assertEqual(high.odyssey_gas_response.correction, 0.0)
-    self.assertFalse(high.odyssey_gas_response.requests)
-    self.assertLess(high_values[-1], CarControllerParams(CP).BOSCH_GAS_LOOKUP_V[-1])
+    for request in (1.2, 1.6, 1.95, 2.0):
+      with self.subTest(request=request):
+        _, _, _, uncorrected = run(request, request + .3, 4.9)
+        high, state, step, values = run(request, request + .3, 7.0)
+        self.assertLess(high.odyssey_gas_response.correction, -40.)
+        self.assertLess(values[-1], uncorrected[-1] - 40)
+        state.vEgo = 8.0
+        self.assertLessEqual(abs(step(100) - values[-1]), ODYSSEY_RESPONSE_SLEW_COUNTS)
 
-    response = OdysseyGasResponse()
-    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 20):
-      response.update(0.75, 1.05, 0.0, 7.0, 1, True)
-    self.assertLess(response.correction, -40.0)
-    for _ in range(20):
-      previous = response.correction
-      response.update(1.95, 2.25, 0.0, 7.0, 1, True, response_weight=0.0)
-      self.assertLessEqual(abs(response.correction - previous), 10.0)
-    self.assertEqual(response.correction, 0.0)
-    self.assertFalse(response.requests)
+        high, _, _, values = run(request, request - .3, 7.0)
+        ceiling = CarControllerParams(CP).BOSCH_GAS_LOOKUP_V[-1]
+        self.assertLessEqual(max(values), ceiling)
+        self.assertLessEqual(high.odyssey_gas_response.correction, ODYSSEY_RESPONSE_MAX_COUNTS)
+        if request == 2.0:
+          self.assertEqual(values[-1], ceiling)
+          self.assertEqual(high.odyssey_gas_response.integral, 0.)
+        else:
+          self.assertGreater(high.odyssey_gas_response.correction, 0.)
 
   def test_negative_gas_bridge_only_enters_from_road_speed_coast(self):
     self.assertEqual(odyssey_command_domains(-0.10, 20.0), (True, False))
