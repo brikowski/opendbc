@@ -593,7 +593,7 @@ class CarController(CarControllerBase):
               gas_selected, brake_selected = True, False
               self.odyssey_gas_bridge_active = False
             # A prior coast forecast and fresh response can establish brake need before the learning dwell.
-            elif (passive_response_eligible and accel < 0.0 and not previous_gas and not self.odyssey_brake_selected and
+            elif (passive_response_eligible and not previous_gas and not self.odyssey_brake_selected and
                   coast_start is not None and passive_accel > accel + ODYSSEY_COAST_RELEASE_ERROR and
                   CS.out.aEgo > accel + ODYSSEY_COAST_RELEASE_ERROR):
               gas_selected, brake_selected = False, True
