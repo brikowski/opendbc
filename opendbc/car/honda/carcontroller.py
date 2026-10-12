@@ -188,9 +188,9 @@ class OdysseyGasResponse:
 
     response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                         ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
-    # Gas reduction and its retained offset use mapped headroom; added gas remains bounded.
+    # Output uses mapped headroom; the retained positive offset remains bounded.
     lower = limits[0]
-    upper = min(ODYSSEY_RESPONSE_MAX_COUNTS, limits[1])
+    upper = limits[1]
     target = 0.0
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
       delayed_request = self.requests[0]
@@ -211,8 +211,8 @@ class OdysseyGasResponse:
       # Keep issued gas while the new observer warms only if the current response still needs it.
       if request >= aego:
         target = float(np.clip(self.correction, 0.0, upper))
-      # Carry the held command into feedback so finishing warmup does not remove it.
-      self.integral = max(target, 0.0)
+      # Seed feedback from the held command within its retained-offset bound.
+      self.integral = min(max(target, 0.0), ODYSSEY_RESPONSE_MAX_COUNTS)
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
     return self.correction

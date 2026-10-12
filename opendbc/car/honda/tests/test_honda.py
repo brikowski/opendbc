@@ -658,7 +658,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertEqual(correction, 0.)
         for _ in range(100):
           correction = response.update(.2, -.8, 0., 20., 7, True, limits=(-available, 700.))
-          self.assertLessEqual(correction, ODYSSEY_RESPONSE_MAX_COUNTS)
+          self.assertLessEqual(correction, 700.)
+          self.assertLessEqual(response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
 
   def test_gas_feedback_reaches_zero_without_changing_acceleration(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -805,6 +806,28 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         invalid_limits = (math.nan, 100.) if direction < 0 else (-100., math.nan)
         self.assertEqual(response.update(.2, .2, 0., 20., 6, True, limits=invalid_limits), 0.)
         self.assertEqual(response.integral, 0.)
+
+  def test_gas_response_output_headroom_preserves_positive_memory_bound(self):
+    for upper in (150., 600.):
+      with self.subTest(upper=upper):
+        response = OdysseyGasResponse()
+        for _ in range(300):
+          previous = response.correction
+          correction = response.update(.2, -.5, .04, 20., 6, True, limits=(-600., upper))
+          self.assertLessEqual(correction, upper)
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertLessEqual(response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
+        self.assertGreater(correction, ODYSSEY_RESPONSE_MAX_COUNTS)
+        issued = correction
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
+          correction = response.update(.2, -.5, .04, 20., 7, True, limits=(-600., upper))
+          self.assertEqual(correction, issued)
+          self.assertLessEqual(response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
+        for _ in range(100):
+          previous = response.correction
+          correction = response.update(.2, .2, .04, 20., 7, True, limits=(-600., upper))
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertLessEqual(correction, ODYSSEY_RESPONSE_MAX_COUNTS)
 
   def test_gas_feedback_preserves_headroom_after_a_request_change(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -1057,6 +1080,15 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertLessEqual(abs(moderate.odyssey_gas_response.correction), ODYSSEY_RESPONSE_MAX_COUNTS)
     state.vEgo = 8.0
     self.assertLessEqual(abs(step(100) - values[-1]), 10)
+
+    high, state, step, values = run(.1, -.6, 20.0)
+    self.assertGreater(high.odyssey_gas_response.correction, ODYSSEY_RESPONSE_MAX_COUNTS)
+    self.assertLessEqual(high.odyssey_gas_response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
+    self.assertLess(max(values), CarControllerParams(CP).BOSCH_GAS_LOOKUP_V[-1])
+    state.aEgo = .1
+    for frame in range(100, 200):
+      step(frame)
+    self.assertLessEqual(high.odyssey_gas_response.correction, ODYSSEY_RESPONSE_MAX_COUNTS)
 
     for request in (1.2, 1.6, 1.95, 2.0):
       with self.subTest(request=request):
@@ -1901,7 +1933,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel, delta=0.01)
             self.assertFalse(controller.odyssey_gas_bridge_active)
             self.assertLessEqual(abs(gas - last_gas), ODYSSEY_RESPONSE_SLEW_COUNTS)
-            self.assertLessEqual(gas, ODYSSEY_RESPONSE_MAX_COUNTS)
+            self.assertLessEqual(gas, controller.params.BOSCH_GAS_LOOKUP_V[-1])
+            self.assertLessEqual(controller.odyssey_gas_response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
             if frame < 152:
               self.assertEqual(gas, 0)
             if gas > 0 and first_positive is None:
