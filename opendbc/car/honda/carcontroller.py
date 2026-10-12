@@ -77,7 +77,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
     gas_selected |= previous_gas and gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
       gas_selected = False
-    brake_selected = accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0 and not release_brake)
+    brake_selected = not release_brake and (accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0))
     # Holding net acceleration can still need brakes when coasting would accelerate faster.
     if previous_brake and not release_brake and passive_accel is not None and accel < passive_accel:
       gas_selected, brake_selected = False, True
@@ -218,14 +218,15 @@ class OdysseyGasResponse:
     return self.correction
 
 
-def odyssey_brake_release(now_nanos, request, aego, braking, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None):
-  """Release excess braking when qualified coast can supply the requested deceleration."""
-  if (not eligible or not all(math.isfinite(v) for v in (request, aego, car_gas, gear)) or
+def odyssey_brake_release(now_nanos, request, aego, previous_brake, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None):
+  """Prefer qualified coast when it can supply the requested deceleration."""
+  if (not eligible or passive_accel is None or not all(math.isfinite(v) for v in (request, aego, car_gas, gear, passive_accel)) or
       not 1 <= gear <= 10 or car_gas != 0 or
       braking_ts_nanos <= 0 or not 0 <= now_nanos - braking_ts_nanos < 60_000_000):
     return False
-  return (braking and ODYSSEY_ROAD_BRAKE_ENTRY < request < 0.0 and aego < request - 0.2 and
-          passive_accel is not None and passive_accel <= request)
+  # Require excess braking to release; tolerate the existing response margin while coasting.
+  margin = -ODYSSEY_COAST_RELEASE_ERROR if previous_brake else ODYSSEY_COAST_RELEASE_ERROR
+  return request < 0.0 and passive_accel <= request and aego < request + margin
 
 
 class OdysseyCoastResponse:
@@ -560,9 +561,10 @@ class CarController(CarControllerBase):
               0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000,
               previous_gas_command == 0.0)
             release_brake = odyssey_brake_release(
-              now_nanos, accel, CS.out.aEgo, CS.odyssey_computer_braking, CS.odyssey_computer_braking_ts_nanos,
+              now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
-              self.odyssey_brake_selected and CS.out.vEgo >= 8.0 and CS.odyssey_engine_torque_ts_nanos > 0,
+              coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
+              (not self.odyssey_brake_selected or CS.odyssey_computer_braking),
               passive_accel)
             # Idle brakes and a positive-request shortfall supersede a held coast forecast.
             release_brake |= (settled_brake and accel > 0.0 and CS.odyssey_car_gas == 0.0 and
@@ -609,10 +611,10 @@ class CarController(CarControllerBase):
                                           (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625)))
             if waiting_for_brake_release:
               gas_selected = False
-            # Keep settled brake history through the feedback wait; a new brake request starts a new interval.
+            # Keep settled brake history through qualified coast and the feedback wait.
             if brake_selected and not self.odyssey_brake_selected:
               self.odyssey_brake_start_frame = self.frame
-            elif not brake_selected and not waiting_for_brake_release:
+            elif not brake_selected and not (waiting_for_brake_release or (release_brake and settled_brake and not gas_selected)):
               self.odyssey_brake_start_frame = None
             self.odyssey_brake_selected = CC.longActive and brake_selected
             self.odyssey_gas_selected = gas_selected
