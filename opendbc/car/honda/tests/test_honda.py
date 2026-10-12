@@ -1586,6 +1586,35 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           for addr, dat, bus in messages:
             self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, bus, dat)))
 
+  def test_coast_estimate_does_not_learn_changing_grade_as_drag(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    controller = CarController({Bus.pt: dbc}, CP)
+    control = structs.CarControl(orientationNED=[0., 0., 0.])
+    state = structs.CarState(vEgo=20., canValid=True)
+    CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                         odyssey_car_gas=0., odyssey_shift_activity=119, odyssey_target_gear=7,
+                         odyssey_user_brake=0., odyssey_computer_braking=False)
+    parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+    drag = -.18
+    for frame in range(800):
+      # Passive acceleration changes with gravity while drivetrain drag stays fixed.
+      pitch = 0. if frame < 200 else -.00025 * (frame - 200) if frame < 400 else -.05 + .00025 * (frame - 400)
+      control.orientationNED = [0., pitch, 0.]
+      state.aEgo = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch) + drag
+      state.vEgo += state.aEgo * DT_CTRL
+      now = 1_000_000_000 + frame * 10_000_000
+      CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+      _, sends = controller.update(control.as_reader(), CS, now)
+      messages = [msg for msg in sends if msg[0] == 0x1DF]
+      if messages:
+        parser.update([(now, messages)])
+        self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+        self.assertEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], 0.)
+      if frame >= 200:
+        self.assertAlmostEqual(controller.odyssey_coast_response.drag[7], drag)
+
   def test_settled_coast_overdeceleration_enters_mapped_gas_and_retains_brake_authority(self):
     from opendbc.safety.tests.libsafety import libsafety_py
 
