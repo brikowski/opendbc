@@ -949,7 +949,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
     packer = CANPacker(dbc)
-    for blocked in (None, 'missing', 'stale', 'future', 'invalid_can', 'neutral', 'reverse'):
+    for blocked in (None, 'last_fresh', 'missing', 'stale', 'future', 'invalid_can', 'neutral', 'reverse'):
       with self.subTest(blocked=blocked):
         controller = CarController({Bus.pt: dbc}, CP)
         CS = CarState(CP)
@@ -964,7 +964,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           stamp = now - 5_000_000
           if frame >= 80:
             target = 0 if blocked == 'neutral' else 13 if blocked == 'reverse' else target
-            stamp = now - 60_000_000 if blocked == 'stale' else now + 1 if blocked == 'future' else stamp
+            stamp = {'last_fresh': now - 59_999_999, 'stale': now - 60_000_000, 'future': now + 1}.get(blocked, stamp)
           parsers[Bus.pt].update([(stamp, [packer.make_can_msg('GEARBOX_AUTO', 1,
                                      {'TRANS_TARGET_GEAR': target, 'GEAR_SHIFTER': 4})])])
           state = CS.update(parsers)
@@ -984,8 +984,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
             self.assertGreater(controller.odyssey_gas_response.correction, 0)
             self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
           if frame >= 80:
-            self.assertEqual(len(controller.odyssey_gas_response.requests), 1 if blocked is None else 0)
-            if blocked is not None:
+            self.assertEqual(len(controller.odyssey_gas_response.requests), 1 if blocked in (None, 'last_fresh') else 0)
+            if blocked not in (None, 'last_fresh'):
               self.assertEqual(controller.odyssey_gas_response.correction, 0)
 
   def test_gas_feedback_does_not_compare_across_received_transmission_activity(self):
@@ -1181,8 +1181,13 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     samples = list(response.warmup[7])
     self.assertAlmostEqual(response.update(90, 7, 0.0, -3.0, False, True), 0.26)
     self.assertEqual(list(response.warmup[7]), samples)
-    self.assertIsNone(response.update(92, 8, 0.0, 0.0, False, True))
-    self.assertIsNone(response.update(94, 7, 0.0, 0.0, False, False))
+    for frame in range(92, 140, 2):
+      self.assertIsNone(response.update(frame, 8, 0.0, 0.0, True, True))
+    # A known gear keeps its prior forecast while new coast observations settle.
+    for frame in range(140, 190, 2):
+      self.assertAlmostEqual(response.update(frame, 7, 0.0, 9.0, True, True), 0.26)
+    self.assertEqual(list(response.warmup[7]), samples)
+    self.assertIsNone(response.update(190, 7, 0.0, 0.0, False, False))
     self.assertFalse(response.drag)
     self.assertFalse(response.warmup)
 

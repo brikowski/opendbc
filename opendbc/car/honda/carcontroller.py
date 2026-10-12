@@ -542,8 +542,9 @@ class CarController(CarControllerBase):
             coast_eligible = CC.longActive and actuators.longControlState == LongCtrlState.pid and coast_observation_eligible
             manual_coast_eligible = (not CC.longActive and 8.0 <= CS.out.vEgo <= 35.0 and
                                      abs(CS.odyssey_user_brake) <= 0.015625 and coast_observation_eligible)
-            coast_state_valid = (CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
-                                 0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
+            gear_state_valid = (CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
+                                0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000)
+            coast_state_valid = (gear_state_valid and
                                  CS.odyssey_computer_braking_ts_nanos > 0 and
                                  0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000)
             passive_accel = self.odyssey_coast_response.update(
@@ -557,8 +558,7 @@ class CarController(CarControllerBase):
               now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
               coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0 and
-              CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
-              0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000,
+              gear_state_valid,
               previous_gas_command == 0.0)
             release_brake = odyssey_brake_release(
               now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
@@ -624,8 +624,7 @@ class CarController(CarControllerBase):
                                  not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
                                  actuators.longControlState == LongCtrlState.pid and
                                  not CS.out.gasPressed and not CS.out.brakePressed and
-                                 CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
-                                 0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000 and
+                                 gear_state_valid and
                                  CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and (self.gas > 0.0 or passive_gas))
             available_gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
