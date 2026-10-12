@@ -991,8 +991,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
   def test_gas_feedback_does_not_compare_across_received_transmission_activity(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for changed in (False, True):
-      with self.subTest(changed=changed):
+    for changed, achieved in ((False, 0.), (True, 0.), (False, -.5), (True, -.5)):
+      with self.subTest(changed=changed, achieved=achieved):
         packer = CANPacker(dbc)
         CS = CarState(CP)
         parsers = CS.get_can_parsers(CP)
@@ -1007,7 +1007,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           parsers[Bus.pt].update([(now - 5_000_000, [packer.make_can_msg('GEARBOX_AUTO', 1,
                                      {'TRANS_TARGET_GEAR': 6, 'TRANS_SHIFT_ACTIVITY': activity, 'GEAR_SHIFTER': 4})])])
           state = CS.update(parsers)
-          state.vEgo, state.aEgo, state.canValid = 20., 0., True
+          state.vEgo, state.aEgo, state.canValid = 20., achieved, True
           CS.out = state
           if frame > 0:
             self.assertEqual(CS.odyssey_target_gear, 6)
@@ -1024,16 +1024,18 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           response = controller.odyssey_gas_response
           self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
           if frame == 78:
-            self.assertGreater(response.correction, 40.)
+            self.assertGreater(response.correction, ODYSSEY_RESPONSE_MAX_COUNTS if achieved < 0. else 40.)
           if frame == 80:
             self.assertEqual(len(response.requests), 1 if changed else ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
-            self.assertAlmostEqual(response.correction, previous if changed else previous + .8, delta=1e-5)
             if changed:
-              self.assertEqual(response.integral, response.correction)
+              self.assertEqual(response.correction, previous)
+              self.assertEqual(response.integral, min(response.correction, ODYSSEY_RESPONSE_MAX_COUNTS))
+            else:
+              self.assertGreater(response.correction, previous)
           if frame == 128 and changed:
             self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES)
             self.assertGreater(response.correction, 40.)
-            self.assertEqual(response.integral, response.correction)
+            self.assertEqual(response.integral, min(response.correction, ODYSSEY_RESPONSE_MAX_COUNTS))
           if frame == 130:
             self.assertGreater(response.correction, 0.)
             if changed:
@@ -1077,7 +1079,9 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     _, _, _, below = run(0.75, 1.05, 4.9)
     moderate, state, step, values = run(0.75, 1.05, 7.0)
     self.assertLess(values[-1], below[-1] - 40)
-    self.assertLessEqual(abs(moderate.odyssey_gas_response.correction), ODYSSEY_RESPONSE_MAX_COUNTS)
+    bp, gas_values = moderate.params.BOSCH_GAS_LOOKUP_BP, moderate.params.BOSCH_GAS_LOOKUP_V
+    mapped = gas_values[0] + (.75 - bp[0]) / (bp[-1] - bp[0]) * (gas_values[-1] - gas_values[0])
+    self.assertGreaterEqual(moderate.odyssey_gas_response.correction, -odyssey_low_speed_gas_command(mapped, .75, 7.0))
     state.vEgo = 8.0
     self.assertLessEqual(abs(step(100) - values[-1]), 10)
 
@@ -1099,10 +1103,16 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         state.vEgo = 8.0
         self.assertLessEqual(abs(step(100) - values[-1]), ODYSSEY_RESPONSE_SLEW_COUNTS)
 
-        high, _, _, values = run(request, request - .3, 7.0)
-        ceiling = CarControllerParams(CP).BOSCH_GAS_LOOKUP_V[-1]
+        high, _, step, values = run(request, request - .3, 7.0)
+        values.extend(step(frame) for frame in range(100, 300))
+        bp, gas_values = high.params.BOSCH_GAS_LOOKUP_BP, high.params.BOSCH_GAS_LOOKUP_V
+        ceiling = gas_values[-1]
+        mapped = gas_values[0] + (request - bp[0]) / (bp[-1] - bp[0]) * (ceiling - gas_values[0])
         self.assertLessEqual(max(values), ceiling)
-        self.assertLessEqual(high.odyssey_gas_response.correction, ODYSSEY_RESPONSE_MAX_COUNTS)
+        self.assertLessEqual(high.odyssey_gas_response.correction, ceiling - mapped + 1e-6)
+        self.assertLessEqual(high.odyssey_gas_response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
+        if request in (1.2, 1.6):
+          self.assertGreater(high.odyssey_gas_response.correction, ODYSSEY_RESPONSE_MAX_COUNTS)
         if request == 2.0:
           self.assertEqual(values[-1], ceiling)
           self.assertEqual(high.odyssey_gas_response.integral, 0.)
