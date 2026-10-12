@@ -624,8 +624,7 @@ class CarController(CarControllerBase):
                                  not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
                                  actuators.longControlState == LongCtrlState.pid and
                                  not CS.out.gasPressed and not CS.out.brakePressed and
-                                 gear_state_valid and
-                                 CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and (self.gas > 0.0 or passive_gas))
+                                 gear_state_valid and (self.gas > 0.0 or passive_gas))
             available_gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,

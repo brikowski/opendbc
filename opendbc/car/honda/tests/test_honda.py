@@ -950,8 +950,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
     packer = CANPacker(dbc)
-    for blocked in (None, 'last_fresh', 'missing', 'stale', 'future', 'invalid_can', 'neutral', 'reverse'):
-      with self.subTest(blocked=blocked):
+    for speed, blocked in product((0., 2., 20.), (None, 'last_fresh', 'missing', 'stale', 'future', 'invalid_can', 'neutral', 'reverse')):
+      with self.subTest(speed=speed, blocked=blocked):
         controller = CarController({Bus.pt: dbc}, CP)
         CS = CarState(CP)
         parsers = CS.get_can_parsers(CP)
@@ -969,7 +969,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           parsers[Bus.pt].update([(stamp, [packer.make_can_msg('GEARBOX_AUTO', 1,
                                      {'TRANS_TARGET_GEAR': target, 'GEAR_SHIFTER': 4})])])
           state = CS.update(parsers)
-          state.vEgo = 20.
+          state.vEgo = speed
           state.aEgo = 0.
           state.canValid = not (frame >= 80 and blocked == 'invalid_can')
           CS.out = state
@@ -992,8 +992,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
   def test_gas_feedback_does_not_compare_across_received_transmission_activity(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for changed, achieved in ((False, 0.), (True, 0.), (False, -.5), (True, -.5)):
-      with self.subTest(changed=changed, achieved=achieved):
+    for speed, changed, achieved in product((0., 2., 20.), (False, True), (0., -.5)):
+      with self.subTest(speed=speed, changed=changed, achieved=achieved):
         packer = CANPacker(dbc)
         CS = CarState(CP)
         parsers = CS.get_can_parsers(CP)
@@ -1008,7 +1008,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           parsers[Bus.pt].update([(now - 5_000_000, [packer.make_can_msg('GEARBOX_AUTO', 1,
                                      {'TRANS_TARGET_GEAR': 6, 'TRANS_SHIFT_ACTIVITY': activity, 'GEAR_SHIFTER': 4})])])
           state = CS.update(parsers)
-          state.vEgo, state.aEgo, state.canValid = 20., achieved, True
+          state.vEgo, state.aEgo, state.canValid = speed, achieved, True
           CS.out = state
           if frame > 0:
             self.assertEqual(CS.odyssey_target_gear, 6)
@@ -1077,9 +1077,26 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       values = [step(frame) for frame in range(100)]
       return controller, state, step, values
 
-    _, _, _, below = run(0.75, 1.05, 4.9)
+    # Gas response follows the tracking error through launch and the domain speed boundary.
+    for speed in (0., 2., 4.9, 5., 7.):
+      with self.subTest(speed=speed):
+        _, _, _, baseline = run(.75, .75, speed)
+        for achieved in (.45, 1.05):
+          controller, state, step, values = run(.75, achieved, speed)
+          response = controller.odyssey_gas_response
+          self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+          if achieved < .75:
+            self.assertGreater(values[-1], baseline[-1] + 40)
+            self.assertEqual(values[:52], baseline[:52])
+          else:
+            self.assertLess(values[-1], baseline[-1] - 40)
+          integral = response.integral
+          state.vEgo = 5.
+          self.assertLessEqual(abs(step(100) - values[-1]), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          self.assertEqual(len(response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+          self.assertLess(abs(response.integral - integral), 2.)
+
     moderate, state, step, values = run(0.75, 1.05, 7.0)
-    self.assertLess(values[-1], below[-1] - 40)
     bp, gas_values = moderate.params.BOSCH_GAS_LOOKUP_BP, moderate.params.BOSCH_GAS_LOOKUP_V
     mapped = gas_values[0] + (.75 - bp[0]) / (bp[-1] - bp[0]) * (gas_values[-1] - gas_values[0])
     self.assertGreaterEqual(moderate.odyssey_gas_response.correction, -odyssey_low_speed_gas_command(mapped, .75, 7.0))
@@ -1097,7 +1114,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
 
     for request in (1.2, 1.6, 1.95, 2.0):
       with self.subTest(request=request):
-        _, _, _, uncorrected = run(request, request + .3, 4.9)
+        _, _, _, uncorrected = run(request, request, 7.0)
         high, state, step, values = run(request, request + .3, 7.0)
         self.assertLess(high.odyssey_gas_response.correction, -40.)
         self.assertLess(values[-1], uncorrected[-1] - 40)
