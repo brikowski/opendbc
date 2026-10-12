@@ -311,12 +311,15 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         if q <= -0.8 or q >= 0.0 or speed >= 2.0:
           self.assertAlmostEqual(command, q)
     self.assertAlmostEqual(odyssey_creep_brake_accel(-0.3, 0.6), -0.55)
+    self.assertAlmostEqual(odyssey_creep_brake_accel(-0.15, 0.6), -0.40)
+    self.assertAlmostEqual(odyssey_creep_brake_accel(-0.1, 0.6), -0.35)
+    self.assertAlmostEqual(odyssey_creep_brake_accel(-0.05, 0.6), -0.175)
     self.assertAlmostEqual(odyssey_creep_brake_accel(-0.3, 1.5), -0.425)
     for speed in (-1.0, math.nan, math.inf):
       self.assertEqual(odyssey_creep_brake_accel(-0.3, speed), -0.3)
-    for request in (-0.8, -0.3, 0.0):
+    for request in (-0.8, -0.3, -0.1, 0.0):
       self.assertLess(abs(odyssey_creep_brake_accel(request - 1e-6, 0.5) -
-                          odyssey_creep_brake_accel(request + 1e-6, 0.5)), 4e-6)
+                          odyssey_creep_brake_accel(request + 1e-6, 0.5)), 8e-6)
 
   def test_nonfinite_pitch_falls_back_to_raw_command_and_recovers(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

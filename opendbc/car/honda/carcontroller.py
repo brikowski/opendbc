@@ -132,7 +132,7 @@ def odyssey_creep_brake_accel(accel, speed):
   """Compensate weak creep-speed braking without retaining a released request."""
   if not math.isfinite(speed) or speed < 0.0 or accel >= 0.0:
     return accel
-  correction = float(np.interp(accel, [-0.8, -0.3, 0.0], [0.0, -0.25, 0.0]))
+  correction = float(np.interp(accel, [-0.8, -0.3, -0.1, 0.0], [0.0, -0.25, -0.25, 0.0]))
   weight = float(np.interp(speed, [1.0, 2.0], [1.0, 0.0]))
   return accel + weight * correction
 
