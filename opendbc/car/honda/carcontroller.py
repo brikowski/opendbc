@@ -188,7 +188,7 @@ class OdysseyGasResponse:
 
     response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                         ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
-    # Output uses mapped headroom; the retained positive offset remains bounded.
+    # Fresh feedback uses mapped headroom; warmup retains a bounded positive offset.
     lower = limits[0]
     upper = limits[1]
     target = 0.0
@@ -199,7 +199,7 @@ class OdysseyGasResponse:
       residual = float(np.clip(residual, min(request - aego, 0.0), max(request - aego, 0.0)))
       proportional = response_gain * residual
       integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
-                                lower, ODYSSEY_RESPONSE_MAX_COUNTS))
+                                lower, upper))
       target = proportional + integral
       # Retain the offset at zero error without accumulating beyond usable gas authority.
       if lower <= target <= upper or (target > upper and residual < 0.0) or (target < lower and residual > 0.0):
