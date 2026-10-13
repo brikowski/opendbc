@@ -56,8 +56,11 @@ class CarControllerParams:
       self.STEER_MAX = 32767  # TODO: determine if there is a dead zone at the top end
     elif CP.carFingerprint == CAR.HONDA_PILOT_4G_MMR:
       self.STEER_MAX = 3628
+    elif CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      self.STEER_MAX = 3840
+      self.STEER_DELTA_UP = 2
+      self.STEER_DELTA_DOWN = 2
     else:
-      # Odyssey MMR uses up to 2560 for LKA; higher RDM commands are nonlinear and also apply brake drag.
       self.STEER_MAX = 2560
 
 
@@ -67,6 +70,7 @@ class HondaSafetyFlags(IntFlag):
   NIDEC_ALT = 4
   RADARLESS = 8
   BOSCH_CANFD = 16
+  ODYSSEY_LONG = 32
 
 
 class HondaFlags(IntFlag):
