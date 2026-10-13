@@ -180,8 +180,13 @@ class OdysseyGasResponse:
       return 0.0
 
     drivetrain = (gear, shift_activity)
-    if drivetrain != self.drivetrain or (self.pitch_peak is not None and pitch < self.pitch_peak - 0.01):
+    if drivetrain != self.drivetrain:
       self.clear_observer()
+    elif self.pitch_peak is not None and pitch < self.pitch_peak - 0.01:
+      # Falling grade can invalidate added gas, but should not erase overacceleration feedback.
+      if self.integral > 0.0:
+        self.clear_observer()
+      self.pitch_peak = pitch
     self.drivetrain = drivetrain
     self.pitch_peak = pitch if self.pitch_peak is None else max(self.pitch_peak, pitch)
     self.requests.append(request)

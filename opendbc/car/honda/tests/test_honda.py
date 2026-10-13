@@ -937,11 +937,40 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertEqual(response.update(.2, .1, pitch, 20., gear, False, shift_activity=activity), 0.)
         self.assertFalse(response.requests)
 
-  def test_gas_response_rejects_falling_grade_and_stale_lead_request(self):
+  def test_gas_response_corrects_residual_during_falling_grade(self):
+    for achieved in (-.3, .3):
+      with self.subTest(achieved=achieved):
+        response = OdysseyGasResponse()
+        corrections = []
+        for frame in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 4):
+          previous = response.correction
+          correction = response.update(0., achieved, .06 - frame * .0005, 20., 6, True)
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+          corrections.append(correction)
+        if achieved < 0.:
+          self.assertTrue(all(c > 0. for c in corrections[ODYSSEY_RESPONSE_DELAY_FRAMES:]))
+        else:
+          self.assertLess(corrections[-1], -ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * achieved)
+
+  def test_gas_response_does_not_reintroduce_excess_when_grade_falls(self):
+    # The illustrative plant keeps its required correction as the grade changes.
+    for gain in (.001, .003):
+      with self.subTest(gain=gain):
+        response = OdysseyGasResponse()
+        achieved = .26
+        delay = deque([achieved] * ODYSSEY_RESPONSE_DELAY_FRAMES)
+        errors = []
+        for frame in range(2200):
+          pitch = .04 - max(frame - 2000, 0) * .0005
+          correction = response.update(.2, achieved, pitch, 20., 6, True)
+          delay.append(.26 + gain * correction)
+          achieved += (delay.popleft() - achieved) * .02 / (.15 + .02)
+          if frame >= 2000:
+            errors.append(abs(.2 - achieved))
+        self.assertLess(max(errors), .003)
+
+  def test_gas_response_rejects_stale_lead_request(self):
     response = OdysseyGasResponse()
-    for frame in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
-      assert response.update(0.0, -0.3, 0.06 - frame * 0.0005, 20.0, 1, True) == 0.0
-    response.reset()
     for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
       assert response.update(0.3, -0.3, 0.06, 20.0, 1, True) == 0.0
     assert response.update(-0.3, -0.3, 0.06, 20.0, 1, True) == 0.0
