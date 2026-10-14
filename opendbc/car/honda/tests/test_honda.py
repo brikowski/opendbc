@@ -1013,6 +1013,34 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       assert response.update(0.3, -0.3, 0.06, 20.0, 1, True) == 0.0
     assert response.update(-0.3, -0.3, 0.06, 20.0, 1, True) == 0.0
 
+  def test_gas_response_does_not_reintroduce_excess_after_grade_transition(self):
+    # Illustrative delayed propulsion with correct grade feedforward and a fixed gas-map bias.
+    # A transient uphill shortfall does not mean the learned reduction became invalid.
+    def run(observe_grade):
+      response = OdysseyGasResponse()
+      grade = 9.81 * math.sin(.04)
+      propulsion = .2 + grade
+      achieved = .5
+      delay = deque([propulsion] * 25)
+      errors = []
+      for frame in range(4000):
+        pitch = .04 + .04 * min(max(frame - 2000, 0) * .02, 4.)
+        grade = 9.81 * math.sin(pitch)
+        correction = response.update(.2, achieved, pitch if observe_grade else .04, 20., 6, True,
+                                     limits=(-600., 600.))
+        delay.append(.2 + grade + .001 * correction)
+        propulsion += (delay.popleft() - propulsion) * .02 / (.15 + .02)
+        achieved = propulsion + .3 - grade
+        if frame >= 2200:
+          errors.append(achieved - .2)
+      return max(errors), sum(abs(e) for e in errors[-50:]) / 50
+
+    reference_excess, reference_settled = run(False)
+    excess, settled = run(True)
+    self.assertLessEqual(excess, reference_excess + .003)
+    self.assertLess(reference_settled, .003)
+    self.assertLess(settled, .003)
+
   def test_gas_feedback_uses_fresh_received_target_gear_through_drive_shifts(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
