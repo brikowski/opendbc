@@ -218,8 +218,8 @@ class OdysseyGasResponse:
       # Keep issued gas while the new observer warms only if the current response still needs it.
       if request >= aego:
         target = float(np.clip(self.correction, 0.0, upper))
-      # Seed feedback from the held command within its retained-offset bound.
-      self.integral = min(max(target, 0.0), ODYSSEY_RESPONSE_MAX_COUNTS)
+      # Seed feedback from the held command within current mapped headroom.
+      self.integral = max(target, 0.0)
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
     return self.correction
