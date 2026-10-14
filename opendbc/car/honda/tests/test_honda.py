@@ -62,7 +62,8 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
     for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
       self.assertEqual(authority.limit(3500, curvature, current, 31.0, True, 3840), 2560)
     self.assertGreater(authority.limit(3500, curvature, current, 31.0, True, 3840), 2560)
-    self.assertEqual(authority.limit(3500, curvature, current, 14.9, True, 3840), 2560)
+    self.assertEqual(authority.limit(3500, curvature, current, 14.9, True, 3840), 3500)
+    self.assertEqual(authority.limit(3500, curvature, current, 14.9, False, 3840), 2560)
     lower_curvature = 1.8 / 22.0**2
     lower_current = lower_curvature - 0.3 / 22.0**2
     for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
@@ -113,6 +114,34 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
             output = authority.limit(direction * 3500, -curvature, -curvature - direction * error / speed**2, speed, True, 3840)
           self.assertEqual(output, direction * 2560)
 
+  def test_qualified_authority_follows_request_across_speed_changes(self):
+    for direction in (-1, 1):
+      with self.subTest(direction=direction):
+        authority = OdysseySteeringAuthority()
+        for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+          authority.limit(direction * 3500, direction * 1.8 / 22.**2, direction * 1.5 / 22.**2, 22., True, 3840)
+        for speed, error in product((14.9, 8.5, 33.1), (0.3, 0., -0.2)):
+          curvature = direction * 1.8 / speed**2
+          current = curvature - direction * error / speed**2
+          self.assertEqual(authority.limit(direction * 3500, curvature, current, speed, True, 3840), direction * 3500)
+        self.assertEqual(authority.limit(direction * 2000, curvature, current, speed, True, 3840), direction * 2000)
+        for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+          self.assertEqual(authority.limit(direction * 3500, curvature, current, speed, True, 3840), direction * 2560)
+
+  def test_direction_change_requires_new_in_scope_qualification(self):
+    for direction in (-1, 1):
+      with self.subTest(direction=direction):
+        authority = OdysseySteeringAuthority()
+        for _ in range(ODYSSEY_STEER_ERROR_FRAMES):
+          authority.limit(direction * 3500, direction * 1.8 / 22.**2, direction * 1.5 / 22.**2, 22., True, 3840)
+        self.assertEqual(authority.limit(-direction * 3500, -direction * 1.8 / 14.9**2,
+                                         -direction * 1.5 / 14.9**2, 14.9, True, 3840), -direction * 2560)
+        for _ in range(ODYSSEY_STEER_ERROR_FRAMES - 1):
+          self.assertEqual(authority.limit(-direction * 3500, -direction * 1.8 / 22.**2,
+                                           -direction * 1.5 / 22.**2, 22., True, 3840), -direction * 2560)
+        self.assertEqual(authority.limit(-direction * 3500, -direction * 1.8 / 22.**2,
+                                         -direction * 1.5 / 22.**2, 22., True, 3840), -direction * 3500)
+
   def test_extra_range_does_not_withdraw_on_growing_turn_demand(self):
     for direction in (-1, 1):
       with self.subTest(direction=direction):
@@ -136,7 +165,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
       speed = 22.0
       curvature = direction * 1.8 / speed**2
       current = curvature - direction * 0.3 / speed**2
-      for changed in ({'speed': 14.9}, {'speed': 33.1}, {'speed': math.nan}, {'eligible': False},
+      for changed in ({'speed': math.nan}, {'eligible': False},
                       {'curvature': 0.0}, {'curvature': -curvature}, {'current_curvature': math.nan},
                       {'requested': -direction * 3500}, {'requested': direction * 2500}):
         with self.subTest(direction=direction, changed=changed):
@@ -187,6 +216,7 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
                              odyssey_user_brake=0., odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
         counts = []
         for frame in range(200):
+          state.vEgo = 22.0 if frame < 100 else 14.9 if frame < 160 else 33.1
           demand = 1.4 if frame < 100 else 1.25
           control.actuators.curvature = direction * demand / state.vEgo**2
           control.currentCurvature = direction * (demand - 0.4) / state.vEgo**2

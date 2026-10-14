@@ -50,14 +50,16 @@ class OdysseySteeringAuthority:
     desired_accel = curvature * speed * speed
     error = (curvature - current_curvature) * speed * speed
     direction = int(np.sign(requested))
-    qualified = (eligible and 15.0 <= speed <= 33.0 and
+    # Speed bounds qualify entry; the continuing request owns already-qualified authority.
+    qualified = (eligible and
+                 (15.0 <= speed <= 33.0 or
+                  (self.error_frames >= ODYSSEY_STEER_ERROR_FRAMES and direction == self.direction)) and
                  abs(requested) >= ODYSSEY_LKA_STEER_MAX and
                  desired_accel * direction > 0.0 and
                  math.isfinite(error) and math.isfinite(desired_accel))
     if not qualified or direction != self.direction:
       self.error_frames = 0
     self.direction = direction if qualified else 0
-    # Once qualified, the continuing upstream request controls torque through convergence.
     if qualified and error * direction > ODYSSEY_STEER_ERROR_MIN:
       self.error_frames += 1
     elif self.error_frames < ODYSSEY_STEER_ERROR_FRAMES:
