@@ -25,6 +25,7 @@ from opendbc.car.honda.values import CAR, CarControllerParams, HondaFlags
 from opendbc.car.honda.carstate import CarState
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import DBC
+from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
 
 
 class TestHondaFingerprint(unittest.TestCase):
@@ -35,17 +36,24 @@ class TestHondaFingerprint(unittest.TestCase):
 
 
 class TestOdysseySteeringAuthority(unittest.TestCase):
-  def test_parameter_rescaling_preserves_ordinary_physical_map(self):
+  def test_parameter_rescaling_preserves_seed_physical_map(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     params = CarControllerParams(CP)
     self.assertEqual(params.STEER_MAX, 3840)
     self.assertEqual(params.STEER_DELTA_UP * params.STEER_MAX, 3 * 2560)
     self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.35, places=6)
     self.assertAlmostEqual(CP.lateralTuning.torque.friction, 0.2 / 1.5, places=6)
-    for demand in (0.2, 0.5, 0.8):
-      old_count = (demand + 0.2 * 0.9) / 0.9 * 2560
-      new_count = (demand + CP.lateralTuning.torque.friction * CP.lateralTuning.torque.latAccelFactor) / CP.lateralTuning.torque.latAccelFactor * 3840
-      self.assertAlmostEqual(old_count, new_count, delta=0.01)
+    stock = structs.CarParams.new_message()
+    CarInterface.configure_torque_tune(CAR.HONDA_ODYSSEY_5G_MMR, stock.lateralTuning)
+    stock_tuning = stock.lateralTuning.torque
+    torque_from_accel = CarInterface(CP).torque_from_lateral_accel()
+    for demand, error in product((-.6, -.25, -.05, 0., .05, .25, .6), (-.4, -.02, 0., .02, .4)):
+      with self.subTest(demand=demand, error=error):
+        stock_accel = demand + get_friction(error, .01, FRICTION_THRESHOLD, stock_tuning)
+        trial_accel = demand + get_friction(error, .01, FRICTION_THRESHOLD, CP.lateralTuning.torque)
+        old_count = torque_from_accel(stock_accel, stock_tuning) * 2560
+        new_count = torque_from_accel(trial_accel, CP.lateralTuning.torque) * params.STEER_MAX
+        self.assertAlmostEqual(old_count, new_count, delta=0.01)
 
   def test_extra_range_requires_persistent_same_direction_error(self):
     authority = OdysseySteeringAuthority()

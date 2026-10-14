@@ -163,7 +163,7 @@ class CarInterface(CarInterfaceBase):
 
     elif candidate == CAR.HONDA_ODYSSEY_5G_MMR:
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-      # Preserve the physical low/midrange map while exposing a larger normalized ceiling.
+      # Rescale the seed tune with the normalized command ceiling.
       ret.lateralTuning.torque.latAccelFactor *= 1.5
       ret.lateralTuning.torque.friction /= 1.5
       ret.steerActuatorDelay = 0.15
