@@ -552,6 +552,9 @@ class CarController(CarControllerBase):
             coast_state_valid = (gear_state_valid and
                                  CS.odyssey_computer_braking_ts_nanos > 0 and
                                  0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000)
+            # Brake feedback can remain active when the computer-braking indication drops.
+            brake_feedback_active = (CS.odyssey_computer_braking or
+                                     (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625))
             passive_accel = self.odyssey_coast_response.update(
               self.frame, CS.odyssey_target_gear, CC.orientationNED[1] if odyssey_pitch_valid else 0.0, CS.out.aEgo,
               # A nonnegative brake hold is controlled response, not a passive coast observation.
@@ -569,7 +572,7 @@ class CarController(CarControllerBase):
               now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
               coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
-              (not self.odyssey_brake_selected or CS.odyssey_computer_braking),
+              (not self.odyssey_brake_selected or brake_feedback_active),
               passive_accel)
             # Idle brakes and a positive-request shortfall supersede a held coast forecast.
             release_brake |= (settled_brake and accel > 0.0 and CS.odyssey_car_gas == 0.0 and
@@ -612,9 +615,7 @@ class CarController(CarControllerBase):
                                                                       passive_accel if passive_response_eligible else None)
             # A released brake command can precede the received brake feedback returning to idle.
             waiting_for_brake_release = (gas_selected and not previous_gas and coast_eligible and coast_state_valid and
-                                         8.0 <= CS.out.vEgo <= 35.0 and
-                                         (CS.odyssey_computer_braking or
-                                          (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625)))
+                                         8.0 <= CS.out.vEgo <= 35.0 and brake_feedback_active)
             if waiting_for_brake_release:
               gas_selected = False
             # Keep settled brake history through qualified coast and the feedback wait.
