@@ -341,6 +341,72 @@ class TestOdysseySteeringAuthority(unittest.TestCase):
 
 
 class TestOdysseyLongitudinal(unittest.TestCase):
+  def test_factory_econ_switch_does_not_reuse_previous_powertrain_response(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    for initial, selected, can_valid, mode_valid in product((False, True), repeat=4):
+      with self.subTest(initial=initial, selected=selected, can_valid=can_valid, mode_valid=mode_valid):
+        controller = CarController({Bus.pt: DBC[CP.carFingerprint][Bus.pt]}, CP)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=20., canValid=True, ecoModeValid=True, ecoMode=initial)
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = .2
+        controller.frame = 1
+        controller.update(control.as_reader(), CS, 10_000_000)
+        for frame in range(0, 102, 2):
+          controller.odyssey_gas_response.update(.2, -.2, 0., 20., 7, True)
+          controller.odyssey_coast_response.update(frame, 7, 0., -.3, True, True)
+        controller.odyssey_gas_coast_release.update(0, -.1, .3, 20., -.03, 7, .2, True, True)
+        self.assertGreater(controller.odyssey_gas_response.integral, 0.)
+        self.assertTrue(controller.odyssey_coast_response.drag)
+        self.assertTrue(controller.odyssey_gas_coast_release.active)
+        issued_correction = controller.odyssey_gas_response.correction
+        CS.out.ecoMode, CS.out.canValid, CS.out.ecoModeValid = selected, can_valid, mode_valid
+        controller.frame = 3  # Receive the mode change between 50 Hz longitudinal commands.
+        controller.update(control.as_reader(), CS, 30_000_000)
+        changed = initial != selected and can_valid and mode_valid
+        self.assertEqual(controller.odyssey_eco_mode, selected if can_valid and mode_valid else initial)
+        self.assertEqual(controller.odyssey_gas_response.integral == 0., changed)
+        self.assertEqual(controller.odyssey_gas_response.correction, issued_correction)
+        self.assertEqual(not controller.odyssey_gas_response.requests, changed)
+        self.assertEqual(not controller.odyssey_coast_response.drag, changed)
+        self.assertEqual(not controller.odyssey_gas_coast_release.active, changed)
+
+  def test_factory_econ_switch_preserves_gas_slew_while_restarting_feedback(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for initial in (False, True):
+      with self.subTest(initial=initial):
+        controller = CarController({Bus.pt: dbc}, CP)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=25., aEgo=1., canValid=True, ecoModeValid=True, ecoMode=initial)
+        CS.odyssey_target_gear = 7
+        CS.odyssey_car_gas = 1.
+        CS.odyssey_user_brake = 0.
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = .2
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+
+        def step(controller=controller, CS=CS, control=control, parser=parser):
+          now = 1_000_000_000 + controller.frame * 10_000_000
+          CS.odyssey_target_gear_ts_nanos = CS.odyssey_engine_torque_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, sends)])
+          return parser.vl['ACC_CONTROL']['GAS_COMMAND']
+
+        for _ in range(100):
+          step()
+        previous_gas = parser.vl['ACC_CONTROL']['GAS_COMMAND']
+        self.assertLess(controller.odyssey_gas_response.integral, -20.)
+        CS.out.ecoMode = not initial
+        gas = step()
+        self.assertLessEqual(abs(gas - previous_gas), ODYSSEY_RESPONSE_SLEW_COUNTS + 1)
+        self.assertEqual(controller.odyssey_gas_response.integral, 0.)
+        self.assertEqual(len(controller.odyssey_gas_response.requests), 1)
+        self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], .2, delta=.01)
+
   def test_gas_entry_waits_for_received_brake_release(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]

@@ -418,6 +418,7 @@ class CarController(CarControllerBase):
     self.odyssey_gas_response = OdysseyGasResponse()
     self.odyssey_coast_response = OdysseyCoastResponse()
     self.odyssey_gas_coast_release = OdysseyGasCoastRelease()
+    self.odyssey_eco_mode = False
     self.odyssey_pitch = FirstOrderFilter(0.0, ODYSSEY_GRADE_FILTER_TAU, DT_CTRL)
 
   def update(self, CC, CS, now_nanos):
@@ -425,6 +426,13 @@ class CarController(CarControllerBase):
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
+    if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR and CS.out.canValid and CS.out.ecoModeValid:
+      if CS.out.ecoMode != self.odyssey_eco_mode:
+        # A powertrain mode change invalidates response history from the previous mode.
+        self.odyssey_gas_response.clear_observer()
+        self.odyssey_coast_response.reset()
+        self.odyssey_gas_coast_release.reset()
+      self.odyssey_eco_mode = CS.out.ecoMode
     odyssey_pitch_valid = (self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR and
                            len(CC.orientationNED) == 3 and math.isfinite(CC.orientationNED[1]))
     if odyssey_pitch_valid:
