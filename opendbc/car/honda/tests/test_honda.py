@@ -35,6 +35,52 @@ class TestHondaFingerprint(unittest.TestCase):
         assert car_model.config.flags & HondaFlags.BOSCH, "Nidec car found with TJA control"
 
 
+class TestOdysseyEcoState(unittest.TestCase):
+  def setUp(self):
+    self.CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    self.CS = CarState(self.CP)
+    self.parsers = self.CS.get_can_parsers(self.CP)
+    self.CS.update(self.parsers)
+
+  def test_factory_mode_requires_a_new_valid_powertrain_frame(self):
+    self.assertFalse(self.CS.update(self.parsers).ecoModeValid)
+    # Seven-byte frames with independent payloads and checksum in the final byte.
+    for selected, payload in ((True, '0000800000a001'), (False, '0000000000a009')):
+      data = bytes.fromhex(payload)
+      self.parsers[Bus.pt].update([(1_000_000_000, [(0x221, data, 2)])])
+      self.assertFalse(self.CS.update(self.parsers).ecoModeValid)
+      self.parsers[Bus.pt].update([(1_000_000_000, [(0x221, data, 1)])])
+      state = self.CS.update(self.parsers)
+      self.assertTrue(state.ecoModeValid)
+      self.assertEqual(state.ecoMode, selected)
+      self.parsers[Bus.pt].update([(1_010_000_000, [])])
+      self.assertFalse(self.CS.update(self.parsers).ecoModeValid)
+      corrupt = data[:-1] + bytes([data[-1] ^ 1])
+      self.parsers[Bus.pt].update([(1_020_000_000, [(0x221, corrupt, 1)])])
+      state = self.CS.update(self.parsers)
+      self.assertFalse(state.ecoModeValid)
+      self.assertEqual(state.ecoMode, selected)
+
+  def test_optional_econ_status_cannot_fault_can_health(self):
+    parser = CANParser(DBC[self.CP.carFingerprint][Bus.pt], [('ECON_STATUS', float('nan'))], 1)
+    for data in (b'', bytes.fromhex('0000800000a002'), bytes.fromhex('0000800000a001')):
+      for frame in range(10):
+        parser.update([(1_000_000_000 + frame * 40_000_000, [(0x221, data, 1)] if data else [])])
+        self.assertTrue(parser.can_valid)
+        self.assertFalse(parser.bus_timeout)
+    parser.update([(10_000_000_000, [])])
+    self.assertTrue(parser.can_valid)
+
+  def test_odyssey_dbc_preserves_all_other_messages(self):
+    original = CANPacker('acura_rdx_2020_can_generated').dbc
+    odyssey = CANPacker(DBC[self.CP.carFingerprint][Bus.pt]).dbc
+    self.assertEqual(original.addr_to_msg.keys(), odyssey.addr_to_msg.keys())
+    for address, message in original.addr_to_msg.items():
+      if address != 0x221:
+        self.assertEqual(message, odyssey.addr_to_msg[address])
+    self.assertEqual(DBC[CAR.ACURA_RDX_3G][Bus.pt], 'acura_rdx_2020_can_generated')
+
+
 class TestOdysseySteeringAuthority(unittest.TestCase):
   def test_parameter_rescaling_preserves_seed_physical_map(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

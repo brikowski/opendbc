@@ -167,6 +167,8 @@ class CarState(CarStateBase):
     ret.gasPressed = cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"] > 1e-5
 
     if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      ret.ecoMode = bool(cp.vl["ECON_STATUS"]["ECON_ON"])
+      ret.ecoModeValid = bool(cp.vl_all["ECON_STATUS"]["ECON_ON"])
       gas_msg = cp.vl["GAS_PEDAL_2"]
       self.odyssey_car_gas = gas_msg["CAR_GAS"]
       self.odyssey_engine_torque_ts_nanos = cp.ts_nanos["GAS_PEDAL_2"]["ENGINE_TORQUE_ESTIMATE"]
@@ -247,7 +249,8 @@ class CarState(CarStateBase):
   def get_can_parsers(self, CP):
     parsers = {
       Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt],
-                        [("GAS_PEDAL_2", 0)] if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else [], CanBus(CP).pt),
+                        [("GAS_PEDAL_2", 0), ("ECON_STATUS", float('nan'))]
+                        if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else [], CanBus(CP).pt),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).camera),
     }
     if CP.flags & HondaFlags.HAS_BSM:
