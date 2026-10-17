@@ -609,11 +609,11 @@ class CarController(CarControllerBase):
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              (settled_coast or settled_brake))))
             # The feedforward floor must not discard gas still supplied by qualified feedback.
+            # Drivetrain changes restart the observer, which retains needed gas through warmup.
             response_gas |= (previous_gas and not self.odyssey_gas_bridge_active and
                             coast_eligible and coast_state_valid and not brake_feedback_active and
                             8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and
                             (passive_accel is None or passive_accel < accel) and
-                            self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
                             self.odyssey_gas_response.correction > 0.0 and
                             CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR)
             if response_gas:

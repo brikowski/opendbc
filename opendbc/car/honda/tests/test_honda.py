@@ -2342,15 +2342,16 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
 
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for change in (None, 'at_target', 'more_decel', 'excess', 'stronger', 'gear', 'activity', 'stale_engine', 'stale_gear',
-                   'stale_VSA', 'invalid_CAN', 'pose', 'gas_pedal', 'brake_pedal', 'inactive', 'not_pid',
-                   'low_speed', 'high_speed', 'no_offset', 'new_domain', 'bridge', 'received_brake', 'pressure', 'forecast'):
-      with self.subTest(change=change):
+    for change, eco_mode in product((None, 'at_target', 'more_decel', 'excess', 'stronger', 'gear', 'activity', 'stale_engine', 'stale_gear',
+                                    'stale_VSA', 'invalid_CAN', 'pose', 'gas_pedal', 'brake_pedal', 'inactive', 'not_pid',
+                                    'low_speed', 'high_speed', 'no_offset', 'new_domain', 'bridge', 'received_brake', 'pressure', 'forecast'),
+                                   (False, True)):
+      with self.subTest(change=change, eco_mode=eco_mode):
         controller = CarController({Bus.pt: dbc}, CP)
         control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., .08, 0.])
         control.actuators.accel = .05
         control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
-        state = structs.CarState(vEgo=15., aEgo=.05, canValid=True)
+        state = structs.CarState(vEgo=15., aEgo=.05, canValid=True, ecoMode=eco_mode, ecoModeValid=True)
         CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_car_gas=0., odyssey_shift_activity=0, odyssey_target_gear=4,
                              odyssey_user_brake=0., odyssey_computer_braking=False)
@@ -2361,7 +2362,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         safety.init_tests()
         safety.set_controls_allowed(True)
 
-        for frame in range(200 if change in (None, 'at_target') else 142):
+        for frame in range(200 if change in (None, 'at_target', 'gear', 'activity') else 142):
           now = 2_000_000_000 + frame * 10_000_000
           CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
           if frame == 60:
@@ -2429,9 +2430,15 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel if control.longActive else 0., delta=.01)
             self.assertAlmostEqual(output.accel, values['ACCEL_COMMAND'], delta=.01)
             self.assertEqual(values['BRAKE_REQUEST'], change == 'stronger')
-            if change in (None, 'at_target', 'more_decel'):
+            if change in (None, 'at_target', 'more_decel', 'gear', 'activity'):
               self.assertGreater(values['GAS_COMMAND'], 0)
-              self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
+              if change in ('gear', 'activity'):
+                # Restart delayed history while retaining gas still needed by the live response.
+                self.assertEqual(controller.odyssey_gas_response.drivetrain, (CS.odyssey_target_gear, CS.odyssey_shift_activity))
+                self.assertEqual(len(controller.odyssey_gas_response.requests),
+                                 min((frame - 140) // 2 + 1, ODYSSEY_RESPONSE_DELAY_FRAMES + 1))
+              else:
+                self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
             else:
               self.assertEqual(values['GAS_COMMAND'], -30000)
 
