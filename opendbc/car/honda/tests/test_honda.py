@@ -1532,15 +1532,17 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
         self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], fault is None)
 
-  def test_idle_brake_hold_yields_to_positive_acceleration_shortfall(self):
+  def test_brake_hold_yields_to_positive_acceleration_shortfall(self):
     from opendbc.safety.tests.libsafety import libsafety_py
 
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for blocked in (None, 'braking', 'pressure', 'missing_pressure', 'gas', 'settling', 'missing_start',
-                    'response', 'zero', 'negative'):
-      with self.subTest(blocked=blocked):
+    for eco_mode, blocked in product((False, True),
+                                    (None, 'braking', 'pressure', 'missing_pressure', 'gas', 'settling',
+                                     'missing_start', 'response', 'zero', 'negative')):
+      with self.subTest(eco_mode=eco_mode, blocked=blocked):
         controller = CarController({Bus.pt: dbc}, CP)
+        controller.odyssey_eco_mode = eco_mode
         controller.frame = 100
         controller.odyssey_pitch.x = -0.02
         controller.odyssey_coast_response.gear = 7
@@ -1550,7 +1552,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., -0.02, 0.])
         control.actuators.accel = {'zero': 0., 'negative': -0.1}.get(blocked, .15)
         control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
-        state = structs.CarState(vEgo=20., aEgo=.1 if blocked == 'response' else control.actuators.accel - .3, canValid=True)
+        state = structs.CarState(vEgo=20., aEgo=.1 if blocked == 'response' else control.actuators.accel - .3,
+                                 canValid=True, ecoMode=eco_mode, ecoModeValid=True)
         now = 1_000_000_000
         CS = SimpleNamespace(out=state, v_cruise_factor=0.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
                              odyssey_car_gas=1. if blocked == 'gas' else 0., odyssey_shift_activity=119, odyssey_target_gear=7,
@@ -1562,20 +1565,37 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         messages = [msg for msg in sends if msg[0] == 0x1DF]
         parser.update([(now, messages)])
         signals = parser.vl['ACC_CONTROL']
-        self.assertEqual(signals['BRAKE_REQUEST'], blocked is not None)
+        released = blocked in (None, 'braking', 'pressure')
+        self.assertEqual(signals['BRAKE_REQUEST'], not released)
         self.assertEqual(signals['GAS_COMMAND'] == -30000, blocked is not None)
         self.assertAlmostEqual(signals['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
         self.assertAlmostEqual(output.accel, control.actuators.accel, delta=.01)
         self.assertAlmostEqual(controller.odyssey_coast_response.drag[7],
                                0.3 + ACCELERATION_DUE_TO_GRAVITY * math.sin(-0.02))
-        if blocked is None:
-          self.assertIsNone(controller.odyssey_brake_start_frame)
+        if released:
+          checked_messages = list(messages)
+          if blocked is None:
+            self.assertIsNone(controller.odyssey_brake_start_frame)
+          else:
+            self.assertEqual(controller.odyssey_brake_start_frame, 50)
+            # Releasing the command must still wait for received brake feedback before gas.
+            CS.odyssey_computer_braking = False
+            CS.odyssey_user_brake = 0.
+            for _ in range(2):
+              now += 10_000_000
+              CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+              _, sends = controller.update(control.as_reader(), CS, now)
+              messages = [msg for msg in sends if msg[0] == 0x1DF]
+              checked_messages.extend(messages)
+              parser.update([(now, messages)])
+            self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+            self.assertGreater(parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
           safety = libsafety_py.libsafety
           config = CP.safetyConfigs[-1]
           self.assertEqual(safety.set_safety_hooks(config.safetyModel.raw, config.safetyParam), 0)
           safety.init_tests()
           safety.set_controls_allowed(True)
-          for addr, dat, bus in messages:
+          for addr, dat, bus in checked_messages:
             self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, bus, dat)))
 
   def test_first_coast_estimate_does_not_import_code_in_the_control_loop(self):

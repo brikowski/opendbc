@@ -584,9 +584,9 @@ class CarController(CarControllerBase):
               coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
               (not self.odyssey_brake_selected or brake_feedback_active),
               passive_accel)
-            # Idle brakes and a positive-request shortfall supersede a held coast forecast.
+            # Observed shortfall invalidates a positive-request brake hold.
             release_brake |= (settled_brake and accel > 0.0 and CS.odyssey_car_gas == 0.0 and
-                              not CS.odyssey_computer_braking and abs(CS.odyssey_user_brake) <= 0.015625 and
+                              math.isfinite(CS.odyssey_user_brake) and
                               CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR)
             gas_accel = accel
             cap_weight = 0.0
