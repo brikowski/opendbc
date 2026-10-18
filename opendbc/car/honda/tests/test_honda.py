@@ -439,8 +439,10 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         CS.out.ecoMode = not initial
         gas = step()
         self.assertLessEqual(abs(gas - previous_gas), ODYSSEY_RESPONSE_SLEW_COUNTS + 1)
-        self.assertEqual(controller.odyssey_gas_response.integral, 0.)
+        self.assertLessEqual(gas, previous_gas)
+        self.assertLess(controller.odyssey_gas_response.integral, 0.)
         self.assertEqual(len(controller.odyssey_gas_response.requests), 1)
+        self.assertFalse(controller.odyssey_gas_response.error.initialized)
         self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], .2, delta=.01)
 
   def test_gas_entry_waits_for_received_brake_release(self):
@@ -837,12 +839,13 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
           self.assertGreaterEqual(response.integral, -available)
           self.assertLessEqual(response.integral, ODYSSEY_RESPONSE_MAX_COUNTS)
+        issued = correction
         for _ in range(math.ceil(available / ODYSSEY_RESPONSE_SLEW_COUNTS) + ODYSSEY_RESPONSE_DELAY_FRAMES):
           previous = response.correction
           correction = response.update(.2, .2, 0., 20., 7, True, limits=(-available, 700.))
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
           self.assertLessEqual(correction, 0.)
-        self.assertEqual(correction, 0.)
+        self.assertEqual(correction, issued)
         for _ in range(100):
           correction = response.update(.2, -.8, 0., 20., 7, True, limits=(-available, 700.))
           self.assertLessEqual(correction, 700.)
@@ -1016,6 +1019,27 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
         self.assertEqual(correction, issued)
 
+  def test_gas_response_warmup_reduction_needs_live_error_and_headroom(self):
+    for lower, achieved in product((-5., -50.), (0., .2, .4)):
+      with self.subTest(lower=lower, achieved=achieved):
+        response = OdysseyGasResponse()
+        for _ in range(300):
+          response.update(.2, .4, 0., 20., 6, True, limits=(-600., 600.))
+        self.assertLess(response.correction, -50.)
+        issued = response.correction
+        response.clear_observer()
+        correction = response.update(.2, achieved, 0., 20., 6, True, limits=(lower, 600.))
+        self.assertLessEqual(abs(correction - issued), ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertLessEqual(correction, 0.)
+        self.assertGreaterEqual(response.integral, lower)
+        self.assertLessEqual(response.integral, 0.)
+        if achieved < .2 or (achieved > .2 and lower == -5.):
+          self.assertEqual(response.integral, 0.)
+        else:
+          self.assertLess(response.integral, 0.)
+        self.assertFalse(response.error.initialized)
+        self.assertEqual(len(response.requests), 1)
+
   def test_gas_feedback_preserves_headroom_after_a_request_change(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
@@ -1067,7 +1091,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
 
   def test_gas_response_does_not_reintroduce_error_after_observer_warmup(self):
     # Keep the illustrative plant unchanged to isolate the observer's state transition.
-    for gain, bias, change in product((.001, .003), (.06, .15, .3), ('gear', 'activity', 'grade')):
+    for gain, bias, change in product((.001, .003), (-.3, -.15, -.06, .06, .15, .3), ('gear', 'activity', 'grade', 'clear')):
       with self.subTest(gain=gain, bias=bias, change=change):
         response = OdysseyGasResponse()
         achieved = .2 - bias
@@ -1075,6 +1099,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         errors = []
         for frame in range(2200):
           changed = frame >= 2000
+          if frame == 2000 and change == 'clear':
+            response.clear_observer()
           correction = response.update(.2, achieved, .02 if changed and change == 'grade' else .04,
                                        20., 7 if changed and change == 'gear' else 6, True,
                                        shift_activity=110 if changed and change == 'activity' else 102,

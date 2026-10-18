@@ -195,7 +195,7 @@ class OdysseyGasResponse:
 
     response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                         ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
-    # Fresh feedback uses mapped headroom; warmup retains a bounded positive offset.
+    # Fresh feedback and warmup use the mapped headroom.
     lower = limits[0]
     upper = limits[1]
     target = 0.0
@@ -214,12 +214,15 @@ class OdysseyGasResponse:
       target = float(np.clip(proportional + self.integral, lower, upper))
     else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
-      target = float(np.clip(response_gain * min(request - aego, 0.0), lower, 0.0))
-      # Keep issued gas while the new observer warms only if the current response still needs it.
-      if request >= aego:
-        target = float(np.clip(self.correction, 0.0, upper))
-      # Seed feedback from the held command within current mapped headroom.
-      self.integral = max(target, 0.0)
+      proportional = float(np.clip(response_gain * min(request - aego, 0.0), lower, 0.0))
+      target = float(np.clip(self.correction, lower, upper))
+      # Retain issued correction unless the current error asks for the opposite direction.
+      if (request - aego) * target < 0.0:
+        target = 0.0
+      if request < aego:
+        target = min(target, proportional)
+      # Seed the offset after accounting for the current proportional reduction.
+      self.integral = target - proportional
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
                                      self.correction + ODYSSEY_RESPONSE_SLEW_COUNTS))
     return self.correction
