@@ -162,6 +162,7 @@ class CarInterface(CarInterfaceBase):
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.6], [0.18]] # TODO: can probably use some tuning
 
     elif candidate == CAR.HONDA_ODYSSEY_5G_MMR:
+      ret.wheelSpeedFactor = 0.993
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
       # Rescale the seed tune with the normalized command ceiling.
       ret.lateralTuning.torque.latAccelFactor *= 1.5

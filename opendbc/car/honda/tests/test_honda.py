@@ -23,6 +23,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY
                                              odyssey_uphill_gas_accel_with_cap)
 from opendbc.car.honda.values import CAR, CarControllerParams, HondaFlags
 from opendbc.car.honda.carstate import CarState
+from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import DBC
 from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
@@ -33,6 +34,41 @@ class TestHondaFingerprint(unittest.TestCase):
     for car_model in CAR:
       if car_model.config.flags & HondaFlags.BOSCH_TJA_CONTROL:
         assert car_model.config.flags & HondaFlags.BOSCH, "Nidec car found with TJA control"
+
+
+class TestOdysseySpeed(unittest.TestCase):
+  def test_calibrated_speed_across_transmission_wheel_blend(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    self.assertAlmostEqual(CP.wheelSpeedFactor, .993)
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    for wheel_kph, transmission_kph, expected in ((0., 0., 0.), (1.8, 2.88, .7944),
+                                               (12.6, 14.4, 3.72375), (21.6, 28.8, 5.958), (112., 115.2, 30.8933333333)):
+      for econ in (False, True):
+        with self.subTest(wheel=wheel_kph, econ=econ):
+          state = CarState(CP)
+          parsers = state.get_can_parsers(CP)
+          frames = [packer.make_can_msg('WHEEL_SPEEDS', 1, {f'WHEEL_SPEED_{s}': wheel_kph for s in ('FL', 'FR', 'RL', 'RR')}),
+                    packer.make_can_msg('ENGINE_DATA', 1, {'XMISSION_SPEED': transmission_kph}),
+                    packer.make_can_msg('ECON_STATUS', 1, {'ECON_ON': econ})]
+          for frame in range(500):
+            parsers[Bus.pt].update([(1_000_000_000 + frame * 10_000_000, frames)])
+            result = state.update(parsers)
+          self.assertAlmostEqual(result.vEgoRaw, expected, delta=2e-6)
+          self.assertAlmostEqual(result.vEgo, expected, delta=.001)
+          self.assertAlmostEqual(result.aEgo, 0., delta=.001)
+
+  def test_other_honda_highway_speed_preserves_existing_calibration(self):
+    CP = CarInterface.get_params(CAR.HONDA_CRV_5G, gen_empty_fingerprint(), [], False, False, False)
+    state = CarState(CP)
+    parsers = state.get_can_parsers(CP)
+    state.update(parsers)
+    packer = CANPacker(DBC[CP.carFingerprint][Bus.pt])
+    frames = [packer.make_can_msg('WHEEL_SPEEDS', CanBus(CP).pt, {f'WHEEL_SPEED_{s}': 108. for s in ('FL', 'FR', 'RL', 'RR')}),
+              packer.make_can_msg('ENGINE_DATA', CanBus(CP).pt, {'XMISSION_SPEED': 110.})]
+    parsers[Bus.pt].update([(1_000_000_000, frames)])
+    result = state.update(parsers)
+    self.assertAlmostEqual(CP.wheelSpeedFactor, 1.025)
+    self.assertAlmostEqual(result.vEgoRaw, 30.)
 
 
 class TestOdysseyEcoState(unittest.TestCase):
