@@ -164,9 +164,6 @@ class CarInterface(CarInterfaceBase):
     elif candidate == CAR.HONDA_ODYSSEY_5G_MMR:
       ret.wheelSpeedFactor = 0.993
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
-      # Rescale the seed tune with the normalized command ceiling.
-      ret.lateralTuning.torque.latAccelFactor *= 1.5
-      ret.lateralTuning.torque.friction /= 1.5
       ret.steerActuatorDelay = 0.15
       CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
       if not ret.openpilotLongitudinalControl:

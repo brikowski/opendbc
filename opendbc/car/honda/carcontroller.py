@@ -35,37 +35,6 @@ ODYSSEY_COAST_RELEASE_ERROR = 0.20
 # Keep mild negative road-speed requests out of friction braking. Brake selection remains based on
 # the raw request; gas continuity and response-qualified coast release never add friction braking.
 ODYSSEY_ROAD_BRAKE_ENTRY = -0.30
-ODYSSEY_LKA_STEER_MAX = 2560
-ODYSSEY_STEER_ERROR_MIN = 0.10
-ODYSSEY_STEER_ERROR_FRAMES = 20
-
-
-class OdysseySteeringAuthority:
-  """Open the extra steering range only for persistent same-direction tracking error."""
-  def __init__(self):
-    self.error_frames = 0
-    self.direction = 0
-
-  def limit(self, requested, curvature, current_curvature, speed, eligible, maximum):
-    desired_accel = curvature * speed * speed
-    error = (curvature - current_curvature) * speed * speed
-    direction = int(np.sign(requested))
-    # Speed bounds qualify entry; the continuing request owns already-qualified authority.
-    qualified = (eligible and
-                 (15.0 <= speed <= 33.0 or
-                  (self.error_frames >= ODYSSEY_STEER_ERROR_FRAMES and direction == self.direction)) and
-                 abs(requested) >= ODYSSEY_LKA_STEER_MAX and
-                 desired_accel * direction > 0.0 and
-                 math.isfinite(error) and math.isfinite(desired_accel))
-    if not qualified or direction != self.direction:
-      self.error_frames = 0
-    self.direction = direction if qualified else 0
-    if qualified and error * direction > ODYSSEY_STEER_ERROR_MIN:
-      self.error_frames += 1
-    elif self.error_frames < ODYSSEY_STEER_ERROR_FRAMES:
-      self.error_frames = 0
-    limit = maximum if self.error_frames >= ODYSSEY_STEER_ERROR_FRAMES else ODYSSEY_LKA_STEER_MAX
-    return float(np.clip(requested, -limit, limit))
 
 
 def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=False, bridge_active=False,
@@ -413,7 +382,6 @@ class CarController(CarControllerBase):
     self.gas = 0.0
     self.brake = 0.0
     self.last_torque = 0.0
-    self.odyssey_steering_authority = OdysseySteeringAuthority() if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else None
     self.odyssey_brake_selected = False
     self.odyssey_brake_start_frame = None
     self.odyssey_gas_selected = False
@@ -458,8 +426,7 @@ class CarController(CarControllerBase):
       self.odyssey_gas_coast_release.reset()
 
     # *** rate limit steer ***
-    previous_torque = self.last_torque
-    limited_torque = rate_limit(actuators.torque, previous_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
+    limited_torque = rate_limit(actuators.torque, self.last_torque, -self.params.STEER_DELTA_DOWN * DT_CTRL,
                                 self.params.STEER_DELTA_UP * DT_CTRL)
     self.last_torque = limited_torque
 
@@ -477,15 +444,9 @@ class CarController(CarControllerBase):
     # steer torque is converted back to CAN reference (positive when steering right)
     apply_torque = int(np.clip(-limited_torque, -1.0, 1.0) * self.params.STEER_MAX)
     if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-      requested = -actuators.torque * self.params.STEER_MAX
-      target = self.odyssey_steering_authority.limit(requested, actuators.curvature, CC.currentCurvature,
-                                                     CS.out.vEgo,
-                                                     CC.latActive and not CS.out.steeringPressed and
-                                                     not CS.out.steerFaultTemporary and not CS.out.steerFaultPermanent,
-                                                     self.params.STEER_MAX)
-      physical_slew = self.params.STEER_DELTA_UP * DT_CTRL * self.params.STEER_MAX
-      apply_torque = int(rate_limit(target, -previous_torque * self.params.STEER_MAX,
-                                    -physical_slew, physical_slew)) if CC.latActive else 0
+      # Report the emitted command and restart inactive steering from zero.
+      if not CC.latActive:
+        apply_torque = 0
       self.last_torque = -apply_torque / self.params.STEER_MAX
 
     # Send CAN commands
