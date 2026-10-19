@@ -57,7 +57,6 @@ class CarControllerParams:
     elif CP.carFingerprint == CAR.HONDA_PILOT_4G_MMR:
       self.STEER_MAX = 3628
     else:
-      # Odyssey MMR uses up to 2560 for LKA; higher RDM commands are nonlinear and also apply brake drag.
       self.STEER_MAX = 2560
 
 
@@ -67,6 +66,7 @@ class HondaSafetyFlags(IntFlag):
   NIDEC_ALT = 4
   RADARLESS = 8
   BOSCH_CANFD = 16
+  ODYSSEY_LONG = 32
 
 
 class HondaFlags(IntFlag):
@@ -311,7 +311,7 @@ class CAR(Platforms):
   HONDA_ODYSSEY_5G_MMR = HondaBoschPlatformConfig(
     [HondaCarDocs("Honda Odyssey 2021-26", "All", min_steer_speed=70. * CV.KPH_TO_MS)],
     CarSpecs(wheelbase=3.00, steerRatio=19.4, centerToFrontRatio=0.41),
-    {Bus.pt: 'acura_rdx_2020_can_generated'},
+    {Bus.pt: 'honda_odyssey_5g_mmr_generated'},
     flags=HondaFlags.BOSCH_ALT_BRAKE | HondaFlags.BOSCH_ALT_RADAR,
   )
   ACURA_TLX_2G = HondaBoschPlatformConfig(

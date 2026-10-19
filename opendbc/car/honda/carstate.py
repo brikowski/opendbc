@@ -49,6 +49,14 @@ class CarState(CarStateBase):
     self.dash_speed_seen = False
     self.is_metric = False
     self.v_cruise_factor = 1.
+    self.odyssey_car_gas = np.nan
+    self.odyssey_engine_torque_ts_nanos = 0
+    self.odyssey_target_gear = 0
+    self.odyssey_shift_activity = 0
+    self.odyssey_target_gear_ts_nanos = 0
+    self.odyssey_computer_braking = False
+    self.odyssey_computer_braking_ts_nanos = 0
+    self.odyssey_user_brake = np.nan
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.pt]
@@ -79,6 +87,9 @@ class CarState(CarStateBase):
     # STANDSTILL->WHEELS_MOVING bit can be noisy around zero, so use XMISSION_SPEED
     v_wheel = sum([cp.vl["WHEEL_SPEEDS"][f"WHEEL_SPEED_{s}"] for s in ("FL", "FR", "RL", "RR")]) / 4.0 * CV.KPH_TO_MS
     v_weight = float(np.interp(v_wheel, v_weight_bp, v_weight_v))
+    if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      # Calibrate both inputs to the speed blend.
+      v_wheel *= self.CP.wheelSpeedFactor
     ret.vEgoRaw = (1. - v_weight) * cp.vl["ENGINE_DATA"]["XMISSION_SPEED"] * CV.KPH_TO_MS * self.CP.wheelSpeedFactor + v_weight * v_wheel
     ret.vEgo, ret.aEgo = self.update_speed_kf(ret.vEgoRaw)
     ret.standstill = cp.vl["ENGINE_DATA"]["XMISSION_SPEED"] < 1e-5
@@ -158,6 +169,19 @@ class CarState(CarStateBase):
 
     ret.gasPressed = cp.vl["POWERTRAIN_DATA"]["PEDAL_GAS"] > 1e-5
 
+    if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      ret.ecoMode = bool(cp.vl["ECON_STATUS"]["ECON_ON"])
+      ret.ecoModeValid = bool(cp.vl_all["ECON_STATUS"]["ECON_ON"])
+      gas_msg = cp.vl["GAS_PEDAL_2"]
+      self.odyssey_car_gas = gas_msg["CAR_GAS"]
+      self.odyssey_engine_torque_ts_nanos = cp.ts_nanos["GAS_PEDAL_2"]["ENGINE_TORQUE_ESTIMATE"]
+      self.odyssey_target_gear = cp.vl["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"]
+      self.odyssey_shift_activity = cp.vl["GEARBOX_AUTO"]["TRANS_SHIFT_ACTIVITY"]
+      self.odyssey_target_gear_ts_nanos = cp.ts_nanos["GEARBOX_AUTO"]["TRANS_TARGET_GEAR"]
+      self.odyssey_computer_braking = bool(cp.vl["VSA_STATUS"]["COMPUTER_BRAKING"])
+      self.odyssey_computer_braking_ts_nanos = cp.ts_nanos["VSA_STATUS"]["COMPUTER_BRAKING"]
+      self.odyssey_user_brake = cp.vl["VSA_STATUS"]["USER_BRAKE"]
+
     ret.steeringTorque = cp.vl["STEER_STATUS"]["STEER_TORQUE_SENSOR"]
     ret.steeringPressed = abs(ret.steeringTorque) > STEER_THRESHOLD.get(self.CP.carFingerprint, 1200)
 
@@ -227,7 +251,9 @@ class CarState(CarStateBase):
 
   def get_can_parsers(self, CP):
     parsers = {
-      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).pt),
+      Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt],
+                        [("GAS_PEDAL_2", 0), ("ECON_STATUS", float('nan'))]
+                        if CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else [], CanBus(CP).pt),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CanBus(CP).camera),
     }
     if CP.flags & HondaFlags.HAS_BSM:

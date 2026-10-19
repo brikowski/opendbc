@@ -217,6 +217,8 @@ struct CarState {
   leftBlinker @20 :Bool;
   rightBlinker @21 :Bool;
   genericToggle @23 :Bool;
+  ecoMode @62 :Bool;       # factory ECON selection, when available
+  ecoModeValid @63 :Bool;  # a fresh, validated factory mode was received this update
 
   # lock info
   doorOpen @24 :Bool;           # ideally includes all doors
