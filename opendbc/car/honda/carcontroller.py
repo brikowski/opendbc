@@ -23,6 +23,7 @@ ODYSSEY_GRADE_RAMP_ACCEL = 0.30
 ODYSSEY_GRADE_GAIN = 0.6
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
 ODYSSEY_ZERO_GAS_GRADE_GAIN = 0.25
+ODYSSEY_RESPONSE_ERROR_TAU = 0.3
 ODYSSEY_RESPONSE_DELAY_FRAMES = 25  # 0.5 s Bosch longitudinal delay at 50 Hz
 ODYSSEY_RESPONSE_MAX_COUNTS = 100.0
 ODYSSEY_RESPONSE_COUNTS_PER_ACCEL = 200.0
@@ -132,7 +133,7 @@ class OdysseyGasResponse:
     self.requests = deque(maxlen=ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
     self.pitch_peak = None
     self.drivetrain = None
-    self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
+    self.error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2, initialized=False)
 
   def reset(self):
     self.__init__()
@@ -141,7 +142,7 @@ class OdysseyGasResponse:
     self.integral = 0.0
     self.requests.clear()
     self.pitch_peak = None
-    self.error = FirstOrderFilter(0.0, 0.3, DT_CTRL * 2, initialized=False)
+    self.error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2, initialized=False)
 
   def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, shift_activity=0,
              limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS)):
@@ -387,6 +388,7 @@ class CarController(CarControllerBase):
     self.odyssey_gas_selected = False
     self.odyssey_gas_bridge_active = False
     self.odyssey_gas_response = OdysseyGasResponse()
+    self.odyssey_brake_response_error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2)
     self.odyssey_coast_response = OdysseyCoastResponse()
     self.odyssey_gas_coast_release = OdysseyGasCoastRelease()
     self.odyssey_eco_mode = False
@@ -401,6 +403,7 @@ class CarController(CarControllerBase):
       if CS.out.ecoMode != self.odyssey_eco_mode:
         # A powertrain mode change invalidates response history from the previous mode.
         self.odyssey_gas_response.clear_observer()
+        self.odyssey_brake_response_error.x = 0.0
         self.odyssey_coast_response.reset()
         self.odyssey_gas_coast_release.reset()
       self.odyssey_eco_mode = CS.out.ecoMode
@@ -423,6 +426,7 @@ class CarController(CarControllerBase):
       self.odyssey_gas_selected = False
       self.odyssey_gas_bridge_active = False
       self.odyssey_gas_response.reset()
+      self.odyssey_brake_response_error.x = 0.0
       self.odyssey_gas_coast_release.reset()
 
     # *** rate limit steer ***
@@ -529,6 +533,8 @@ class CarController(CarControllerBase):
             # Brake feedback can remain active when the computer-braking indication drops.
             brake_feedback_active = (CS.odyssey_computer_braking or
                                      (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625))
+            if self.odyssey_coast_response.gear != CS.odyssey_target_gear:
+              self.odyssey_brake_response_error.x = 0.0
             passive_accel = self.odyssey_coast_response.update(
               self.frame, CS.odyssey_target_gear, CC.orientationNED[1] if odyssey_pitch_valid else 0.0, CS.out.aEgo,
               # A nonnegative brake hold is controlled response, not a passive coast observation.
@@ -548,10 +554,17 @@ class CarController(CarControllerBase):
               coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
               (not self.odyssey_brake_selected or brake_feedback_active),
               passive_accel)
-            # Observed shortfall invalidates a positive-request brake hold.
-            release_brake |= (settled_brake and accel > 0.0 and CS.odyssey_car_gas == 0.0 and
-                              math.isfinite(CS.odyssey_user_brake) and
-                              CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR)
+            # A single wheel-acceleration dip must not override a settled coast forecast.
+            brake_error = accel - CS.out.aEgo
+            if (self.odyssey_brake_selected and coast_eligible and coast_state_valid and
+                passive_accel is not None and 8.0 <= CS.out.vEgo <= 35.0 and
+                CS.odyssey_car_gas == 0.0 and math.isfinite(CS.odyssey_user_brake) and math.isfinite(brake_error)):
+              self.odyssey_brake_response_error.update(brake_error)
+            else:
+              self.odyssey_brake_response_error.x = 0.0
+            release_brake |= (settled_brake and accel > 0.0 and
+                              brake_error > ODYSSEY_COAST_RELEASE_ERROR and
+                              self.odyssey_brake_response_error.x > ODYSSEY_COAST_RELEASE_ERROR)
             gas_accel = accel
             cap_weight = 0.0
             bridge_weight = 0.0
