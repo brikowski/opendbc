@@ -162,6 +162,7 @@ class CarInterface(CarInterfaceBase):
       ret.lateralTuning.pid.kpV, ret.lateralTuning.pid.kiV = [[0.6], [0.18]] # TODO: can probably use some tuning
 
     elif candidate == CAR.HONDA_ODYSSEY_5G_MMR:
+      ret.wheelSpeedFactor = 0.993
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
       ret.steerActuatorDelay = 0.15
       CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
@@ -188,6 +189,8 @@ class CarInterface(CarInterfaceBase):
       ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.NIDEC_ALT.value
     if ret.openpilotLongitudinalControl and ret.flags & HondaFlags.BOSCH:
       ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.BOSCH_LONG.value
+      if candidate == CAR.HONDA_ODYSSEY_5G_MMR:
+        ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.ODYSSEY_LONG.value
     if ret.flags & HondaFlags.BOSCH_RADARLESS:
       ret.safetyConfigs[-1].safetyParam |= HondaSafetyFlags.RADARLESS.value
     if ret.flags & HondaFlags.BOSCH_CANFD:

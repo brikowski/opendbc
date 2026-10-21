@@ -1,0 +1,12 @@
+CM_ "IMPORT _honda_common.dbc";
+CM_ "IMPORT _bosch_2018.dbc";
+CM_ "IMPORT _bosch_radar_acc.dbc";
+CM_ "IMPORT _lkas_hud_5byte.dbc";
+CM_ "IMPORT _bosch_standstill.dbc";
+CM_ "IMPORT _steering_sensors_b.dbc";
+CM_ "IMPORT _gearbox_common.dbc";
+
+CM_ "Override the shared six-byte ECON message for the Odyssey's seven-byte status.";
+BO_ 545 ECON_STATUS: 7 SCM
+ SG_ ECON_ON : 23|1@0+ (1,0) [0|1] "" XXX
+ SG_ CHECKSUM : 51|4@0+ (1,0) [0|15] "" XXX
