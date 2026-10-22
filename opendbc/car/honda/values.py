@@ -56,6 +56,11 @@ class CarControllerParams:
       self.STEER_MAX = 32767  # TODO: determine if there is a dead zone at the top end
     elif CP.carFingerprint == CAR.HONDA_PILOT_4G_MMR:
       self.STEER_MAX = 3628
+    elif CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
+      self.STEER_MAX = 3840
+      # Preserve the stock slew in CAN counts as the normalized range expands.
+      self.STEER_DELTA_UP = 2
+      self.STEER_DELTA_DOWN = 2
     else:
       self.STEER_MAX = 2560
 

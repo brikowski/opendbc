@@ -117,15 +117,15 @@ class TestOdysseyEcoState(unittest.TestCase):
 
 
 class TestOdysseySteering(unittest.TestCase):
-  def test_stock_steering_parameters_and_physical_seed(self):
+  def test_steering_range_preserves_physical_seed_and_slew(self):
     for alpha_long in (False, True):
       CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], alpha_long, False, False)
       params = CarControllerParams(CP)
-      self.assertEqual(params.STEER_MAX, 2560)
-      self.assertEqual(params.STEER_DELTA_UP, 3)
-      self.assertEqual(params.STEER_DELTA_DOWN, 3)
-      self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, .9, places=6)
-      self.assertAlmostEqual(CP.lateralTuning.torque.friction, .2, places=6)
+      self.assertEqual(params.STEER_MAX, 3840)
+      self.assertEqual(params.STEER_DELTA_UP * params.STEER_MAX, 7680)
+      self.assertEqual(params.STEER_DELTA_DOWN * params.STEER_MAX, 7680)
+      self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.35, places=6)
+      self.assertAlmostEqual(CP.lateralTuning.torque.friction, .2 / 1.5, places=6)
       self.assertAlmostEqual(CP.steerActuatorDelay, .15, places=6)
       torque_from_accel = CarInterface(CP).torque_from_lateral_accel()
       for demand, error, expected in ((.45, 0., 1280), (.45, .4, 1792), (.45, -.4, 768),
@@ -141,6 +141,7 @@ class TestOdysseySteering(unittest.TestCase):
     for alpha_long, econ, direction in product((False, True), (False, True), (-1, 1)):
       with self.subTest(alpha_long=alpha_long, econ=econ, direction=direction):
         CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], alpha_long, False, False)
+        limit = 3840
         dbc = DBC[CP.carFingerprint][Bus.pt]
         controller = CarController({Bus.pt: dbc}, CP)
         bus = CanBus(CP).lkas
@@ -172,21 +173,25 @@ class TestOdysseySteering(unittest.TestCase):
           self.assertEqual(steering[0][2], bus)
           for addr, dat, src in steering:
             self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, src, dat)))
+            safety.set_controls_allowed(False)
+            self.assertEqual(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, src, dat)),
+                             int.from_bytes(dat[:2], 'big', signed=True) == 0)
+            safety.set_controls_allowed(True)
           parser.update([(frame * 10_000_000, steering)])
           value = parser.vl['STEERING_CONTROL']['STEER_TORQUE']
           self.assertEqual(parser.vl['STEERING_CONTROL']['STEER_TORQUE_REQUEST'], control.latActive)
           self.assertEqual(value, output.torqueOutputCan)
-          self.assertAlmostEqual(output.torque, -value / 2560, places=6)
-          self.assertLessEqual(abs(value), 2560)
+          self.assertAlmostEqual(output.torque, -value / limit, places=6)
+          self.assertLessEqual(abs(value), limit)
           if frame and frame not in (280, 281):
             self.assertLessEqual(abs(value - counts[-1]), 77)
           counts.append(value)
-        self.assertEqual(counts[99], -direction * 1920)
-        self.assertEqual(counts[179], -direction * 2560)
-        self.assertEqual(counts[279], direction * 1280)
+        self.assertEqual(counts[99], -direction * int(.75 * limit))
+        self.assertEqual(counts[179], -direction * limit)
+        self.assertEqual(counts[279], direction * int(.5 * limit))
         self.assertEqual(counts[280], 0)
         self.assertLessEqual(abs(counts[281]), 77)
-        self.assertEqual(counts[-1], -direction * 640)
+        self.assertEqual(counts[-1], -direction * int(.25 * limit))
 
 
 class TestOdysseyLongitudinal(unittest.TestCase):

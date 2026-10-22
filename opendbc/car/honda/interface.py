@@ -164,6 +164,10 @@ class CarInterface(CarInterfaceBase):
     elif candidate == CAR.HONDA_ODYSSEY_5G_MMR:
       ret.wheelSpeedFactor = 0.993
       CarInterfaceBase.configure_torque_tune(candidate, ret.lateralTuning)
+      # Preserve acceleration and friction in CAN counts as the normalized range expands.
+      steer_scale = CarControllerParams(ret).STEER_MAX / 2560
+      ret.lateralTuning.torque.latAccelFactor *= steer_scale
+      ret.lateralTuning.torque.friction /= steer_scale
       ret.steerActuatorDelay = 0.15
       CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
       if not ret.openpilotLongitudinalControl:
