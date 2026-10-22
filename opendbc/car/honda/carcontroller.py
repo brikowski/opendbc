@@ -246,17 +246,20 @@ class OdysseyCoastResponse:
 
 
 class OdysseyGasCoastRelease:
-  """Release excess downhill gas into coast using prior coast response or an exhausted gas command."""
+  """Release excess gas into coast using prior coast response or qualified gas exhaustion."""
   def __init__(self):
     self.requests = deque(maxlen=12)
     self.gear = None
     self.active = False
+    self.exhausted = False
 
   def reset(self):
     self.__init__()
 
-  def update(self, now_nanos, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False):
-    if (not eligible or not 1 <= gear <= 10 or
+  def update(self, now_nanos, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False,
+             floor_excess=False, downhill=True):
+    exhausted_gas = previous_gas and gas_floor and floor_excess and request < 0.0
+    if (not eligible or (not downhill and not exhausted_gas and not self.exhausted) or not 1 <= gear <= 10 or
         not all(math.isfinite(v) for v in (request, aego, speed, pitch)) or
         (passive_accel is not None and not math.isfinite(passive_accel))):
       self.reset()
@@ -269,20 +272,24 @@ class OdysseyGasCoastRelease:
     request_slope = (request - prior[1]) / ((now_nanos - prior[0]) * 1e-9) if prior is not None else 0.0
 
     downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
+    # A prior forecast must not immediately undo release from sustained excess at zero gas.
     if (request <= ODYSSEY_ROAD_BRAKE_ENTRY or
         (request >= 0.0 and passive_accel is None) or
-        (passive_accel is not None and passive_accel - request < 0.05) or
-        not 8.0 <= speed <= 35.0 or downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY or
+        (passive_accel is not None and passive_accel - request < 0.05 and
+         not (self.exhausted and aego - request > ODYSSEY_COAST_RELEASE_ERROR)) or
+        not 8.0 <= speed <= 35.0 or
+        (downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY and not self.exhausted) or
         aego - request < 0.05):
-      self.active = False
+      self.active = self.exhausted = False
     if (not self.active and (previous_gas or passive_accel is not None) and 8.0 <= speed <= 35.0 and
         ODYSSEY_ROAD_BRAKE_ENTRY < request and
-        downhill_gravity > ODYSSEY_COAST_RELEASE_GRAVITY and
         aego - request > ODYSSEY_COAST_RELEASE_ERROR and
-        # With no coast history, release only after the issued gas command has reached zero.
-        ((passive_accel is not None and passive_accel - request > ODYSSEY_COAST_RELEASE_ERROR) or
-         (passive_accel is None and request < 0.0 and gas_floor and request_slope < -0.20))):
+        (exhausted_gas or
+         (downhill and downhill_gravity > ODYSSEY_COAST_RELEASE_GRAVITY and
+          ((passive_accel is not None and passive_accel - request > ODYSSEY_COAST_RELEASE_ERROR) or
+           (passive_accel is None and request < 0.0 and gas_floor and request_slope < -0.20))))):
       self.active = True
+      self.exhausted = exhausted_gas
     return self.active
 
 
@@ -542,12 +549,14 @@ class CarController(CarControllerBase):
                                     (settled_brake and accel < 0.0)) and abs(CS.odyssey_user_brake) <= 0.015625 and
               CS.odyssey_car_gas == 0.0 and
               not CS.odyssey_computer_braking, (coast_eligible or manual_coast_eligible) and coast_state_valid)
+            response_excess = (self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
+                               self.odyssey_gas_response.error.x < -ODYSSEY_COAST_RELEASE_ERROR)
             release_gas = self.odyssey_gas_coast_release.update(
               now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
-              coast_eligible and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0 and
-              gear_state_valid,
-              previous_gas_command == 0.0)
+              coast_eligible and coast_state_valid, previous_gas_command == 0.0,
+              response_excess and CS.odyssey_car_gas == 0.0 and not CS.odyssey_computer_braking and abs(CS.odyssey_user_brake) <= 0.015625,
+              odyssey_pitch_valid and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0)
             release_brake = odyssey_brake_release(
               now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
@@ -576,8 +585,6 @@ class CarController(CarControllerBase):
             coast_start = self.odyssey_coast_response.coast_start
             settled_coast = (not self.odyssey_brake_selected and coast_start is not None and
                              self.frame - coast_start >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
-            response_excess = (self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
-                               self.odyssey_gas_response.error.x < -ODYSSEY_COAST_RELEASE_ERROR)
             response_gas = (passive_response_eligible and accel < 0.0 and passive_accel < accel and
                            not CS.odyssey_computer_braking and
                            ((previous_gas and (CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR or

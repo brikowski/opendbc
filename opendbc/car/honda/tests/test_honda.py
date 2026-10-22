@@ -1663,6 +1663,120 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
     self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], -0.14, delta=0.01)
 
+  def test_sustained_zero_gas_excess_releases_before_learning_coast_in_both_modes(self):
+    from opendbc.safety.tests.libsafety import libsafety_py
+
+    for econ in (False, True):
+      with self.subTest(econ=econ):
+        CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+        controller = CarController({Bus.pt: DBC[CP.carFingerprint][Bus.pt]}, CP)
+        state = structs.CarState(vEgo=20., aEgo=.4, canValid=True, ecoModeValid=True, ecoMode=econ)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = state
+        CS.odyssey_car_gas = CS.odyssey_user_brake = 0.
+        CS.odyssey_computer_braking = False
+        CS.odyssey_target_gear = 7
+        CS.odyssey_shift_activity = 119
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [('ACC_CONTROL', 0)], 1)
+        safety = libsafety_py.libsafety
+        config = CP.safetyConfigs[-1]
+        self.assertEqual(safety.set_safety_hooks(config.safetyModel.raw, config.safetyParam), 0)
+        safety.init_tests()
+        safety.set_controls_allowed(True)
+        for frame in range(384):
+          request = .05 if frame < 300 else -.05 if frame < 370 else .6 if frame < 380 else -.4
+          control.actuators.accel = request
+          now = 1_000_000_000 + frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          output, sends = controller.update(control.as_reader(), CS, now)
+          if frame % 2:
+            continue
+          packets = [msg for msg in sends if msg[0] == 0x1DF]
+          for addr, dat, bus in packets:
+            self.assertTrue(safety.safety_tx_hook(libsafety_py.make_CANPacket(addr, bus, dat)))
+          parser.update([(now, packets)])
+          signals = parser.vl['ACC_CONTROL']
+          self.assertAlmostEqual(signals['ACCEL_COMMAND'], request, delta=.005)
+          self.assertAlmostEqual(output.accel, request, delta=.005)
+          if frame < 354:
+            self.assertFalse(controller.odyssey_coast_response.drag)
+          if 302 <= frame < 364:
+            self.assertEqual((signals['GAS_COMMAND'], signals['BRAKE_REQUEST']), (-30000, 0))
+          elif 364 <= frame < 370 or frame >= 380:
+            self.assertEqual((signals['GAS_COMMAND'], signals['BRAKE_REQUEST']), (-30000, 1))
+          elif frame >= 370:
+            self.assertGreater(signals['GAS_COMMAND'], 0)
+            self.assertEqual(signals['BRAKE_REQUEST'], 0)
+
+  def test_zero_gas_release_rejects_unreliable_or_unsettled_response(self):
+    faults = (None, 'can', 'gas_age', 'gear_age', 'brake_age', 'received_gas', 'received_brake', 'pressure',
+              'invalid_pressure', 'gas_pedal', 'brake_pedal', 'pose', 'inactive', 'stopping', 'low_speed', 'high_speed',
+              'gear', 'activity', 'mode', 'short_history', 'small_error', 'latest_response', 'issued_gas', 'bridge', 'new_domain')
+    for fault in faults:
+      with self.subTest(fault=fault):
+        CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+        controller = CarController({Bus.pt: DBC[CP.carFingerprint][Bus.pt]}, CP)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=20., aEgo=.4, canValid=True, ecoModeValid=True)
+        CS.odyssey_car_gas = CS.odyssey_user_brake = 0.
+        CS.odyssey_computer_braking = False
+        CS.odyssey_target_gear = 7
+        CS.odyssey_shift_activity = 119
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = .05
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        for frame in range(303):
+          now = 1_000_000_000 + frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          if frame == 300:
+            control.actuators.accel = -.05
+          if frame == 302:
+            self.assertEqual(controller.gas, 0.)
+            if fault == 'can':
+              CS.out.canValid = False
+            elif fault in ('gas_age', 'gear_age', 'brake_age'):
+              setattr(CS, {'gas_age': 'odyssey_engine_torque_ts_nanos', 'gear_age': 'odyssey_target_gear_ts_nanos',
+                           'brake_age': 'odyssey_computer_braking_ts_nanos'}[fault], now - 60_000_000)
+            elif fault == 'received_gas':
+              CS.odyssey_car_gas = 1.
+            elif fault == 'received_brake':
+              CS.odyssey_computer_braking = True
+            elif fault in ('pressure', 'invalid_pressure'):
+              CS.odyssey_user_brake = .03125 if fault == 'pressure' else math.nan
+            elif fault in ('gas_pedal', 'brake_pedal'):
+              setattr(CS.out, 'gasPressed' if fault == 'gas_pedal' else 'brakePressed', True)
+            elif fault == 'pose':
+              control.orientationNED = []
+            elif fault == 'inactive':
+              control.longActive = False
+            elif fault == 'stopping':
+              control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.stopping
+            elif fault in ('low_speed', 'high_speed'):
+              CS.out.vEgo = 7.99 if fault == 'low_speed' else 35.01
+            elif fault == 'gear':
+              CS.odyssey_target_gear = 8
+            elif fault == 'activity':
+              CS.odyssey_shift_activity = 126
+            elif fault == 'mode':
+              CS.out.ecoMode = True
+            elif fault == 'short_history':
+              controller.odyssey_gas_response.clear_observer()
+            elif fault == 'small_error':
+              controller.odyssey_gas_response.error.x = -.19
+            elif fault == 'latest_response':
+              CS.out.aEgo = -.1
+            elif fault in ('issued_gas', 'bridge'):
+              controller.gas = 1. if fault == 'issued_gas' else -60.
+            elif fault == 'new_domain':
+              controller.odyssey_gas_selected = False
+          controller.update(control.as_reader(), CS, now)
+        self.assertEqual(controller.odyssey_gas_coast_release.active, fault is None)
+        self.assertEqual(controller.odyssey_gas_coast_release.exhausted, fault is None)
+
   def test_downhill_coast_waits_for_the_issued_zero_gas_command(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
