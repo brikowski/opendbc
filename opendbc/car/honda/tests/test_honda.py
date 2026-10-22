@@ -1701,11 +1701,14 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           signals = parser.vl['ACC_CONTROL']
           self.assertAlmostEqual(signals['ACCEL_COMMAND'], request, delta=.005)
           self.assertAlmostEqual(output.accel, request, delta=.005)
-          if frame < 354:
+          if frame == 298:
+            self.assertGreater(output.gas, 0.)
+            self.assertEqual(signals['GAS_COMMAND'], 0)
+          if frame < 352:
             self.assertFalse(controller.odyssey_coast_response.drag)
-          if 302 <= frame < 364:
+          if 300 <= frame < 362:
             self.assertEqual((signals['GAS_COMMAND'], signals['BRAKE_REQUEST']), (-30000, 0))
-          elif 364 <= frame < 370 or frame >= 380:
+          elif 362 <= frame < 370 or frame >= 380:
             self.assertEqual((signals['GAS_COMMAND'], signals['BRAKE_REQUEST']), (-30000, 1))
           elif frame >= 370:
             self.assertGreater(signals['GAS_COMMAND'], 0)
@@ -1715,8 +1718,11 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     faults = (None, 'can', 'gas_age', 'gear_age', 'brake_age', 'received_gas', 'received_brake', 'pressure',
               'invalid_pressure', 'gas_pedal', 'brake_pedal', 'pose', 'inactive', 'stopping', 'low_speed', 'high_speed',
               'gear', 'activity', 'mode', 'short_history', 'small_error', 'latest_response', 'issued_gas', 'bridge', 'new_domain')
-    for fault in faults:
-      with self.subTest(fault=fault):
+    encoded_commands = (-60., -1., math.nextafter(-.5, -math.inf), -.5, math.nextafter(-.5, math.inf), 0., .25, .49,
+                        math.nextafter(math.nextafter(.5, -math.inf), -math.inf), math.nextafter(.5, -math.inf),
+                        .5, math.nextafter(.5, math.inf), 1.)
+    for fault, issued in [(fault, None) for fault in faults] + [('encoding', gas) for gas in encoded_commands]:
+      with self.subTest(fault=fault, issued=issued):
         CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
         controller = CarController({Bus.pt: DBC[CP.carFingerprint][Bus.pt]}, CP)
         CS = CarState(CP)
@@ -1729,13 +1735,22 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
         control.actuators.accel = .05
         control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
-        for frame in range(303):
+        parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [('ACC_CONTROL', 0)], 1)
+        expected_release = fault is None
+        for frame in range(301):
           now = 1_000_000_000 + frame * 10_000_000
           CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
           if frame == 300:
             control.actuators.accel = -.05
-          if frame == 302:
-            self.assertEqual(controller.gas, 0.)
+            if issued is not None:
+              controller.gas = issued
+            packet = CANPacker(DBC[CP.carFingerprint][Bus.pt]).make_can_msg('ACC_CONTROL', 1, {'GAS_COMMAND': controller.gas})
+            parser.update([(now - 20_000_000, [packet])])
+            wire_gas = parser.vl['ACC_CONTROL']['GAS_COMMAND']
+            if issued is None:
+              self.assertEqual(wire_gas, 0.)
+            else:
+              expected_release = wire_gas == 0.
             if fault == 'can':
               CS.out.canValid = False
             elif fault in ('gas_age', 'gear_age', 'brake_age'):
@@ -1774,8 +1789,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             elif fault == 'new_domain':
               controller.odyssey_gas_selected = False
           controller.update(control.as_reader(), CS, now)
-        self.assertEqual(controller.odyssey_gas_coast_release.active, fault is None)
-        self.assertEqual(controller.odyssey_gas_coast_release.exhausted, fault is None)
+        self.assertEqual(controller.odyssey_gas_coast_release.active, expected_release)
+        self.assertEqual(controller.odyssey_gas_coast_release.exhausted, expected_release)
 
   def test_downhill_coast_waits_for_the_issued_zero_gas_command(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

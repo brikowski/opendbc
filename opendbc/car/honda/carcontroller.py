@@ -551,10 +551,11 @@ class CarController(CarControllerBase):
               not CS.odyssey_computer_braking, (coast_eligible or manual_coast_eligible) and coast_state_valid)
             response_excess = (self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
                                self.odyssey_gas_response.error.x < -ODYSSEY_COAST_RELEASE_ERROR)
+            # GAS_COMMAND has one-count resolution and the CAN packer rounds half up.
             release_gas = self.odyssey_gas_coast_release.update(
               now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
               CS.odyssey_target_gear, passive_accel, previous_gas,
-              coast_eligible and coast_state_valid, previous_gas_command == 0.0,
+              coast_eligible and coast_state_valid, math.floor(previous_gas_command + 0.5) == 0,
               response_excess and CS.odyssey_car_gas == 0.0 and not CS.odyssey_computer_braking and abs(CS.odyssey_user_brake) <= 0.015625,
               odyssey_pitch_valid and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0)
             release_brake = odyssey_brake_release(
