@@ -1340,7 +1340,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     # A known gear keeps its prior forecast while new coast observations settle.
     for frame in range(140, 190, 2):
       self.assertAlmostEqual(response.update(frame, 7, 0.0, 9.0, True, True), 0.26)
-    self.assertEqual(list(response.warmup[7]), samples)
+    self.assertNotIn(7, response.warmup)
     self.assertIsNone(response.update(190, 7, 0.0, 0.0, False, False))
     self.assertFalse(response.drag)
     self.assertFalse(response.warmup)
@@ -1567,6 +1567,29 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertAlmostEqual(response.update(142, 7, 0.0, 0.30, True, True), 0.30)
     for frame in range(144, 210, 2):
       self.assertAlmostEqual(response.update(frame, 7, 0.0, -3.0, False, True), 0.30)
+
+  def test_incomplete_coast_samples_cannot_bridge_interrupted_observations(self):
+    for interruption in ('controlled', 'gear', 'invalid'):
+      with self.subTest(interruption=interruption):
+        response = OdysseyCoastResponse()
+        for frame in range(0, 56, 2):
+          self.assertIsNone(response.update(frame, 7, 0., -.4, True, True))
+        self.assertEqual(len(response.warmup[7]), 3)
+        response.update(56, 8 if interruption == 'gear' else 7, 0., -.4,
+                        interruption != 'controlled', interruption != 'invalid')
+        for frame in range(3600, 3660, 2):
+          self.assertIsNone(response.update(frame, 7, 0., 3. if frame == 3658 else .1, True, True))
+        self.assertAlmostEqual(response.update(3660, 7, 0., .1, True, True), .1)
+        self.assertAlmostEqual(response.update(3662, 7, 0., 3., False, True), .1)
+
+  def test_new_coast_uses_fresh_observations_while_retaining_its_prior_forecast(self):
+    response = OdysseyCoastResponse()
+    for frame in range(0, 100, 2):
+      response.update(frame, 7, 0., -.4, True, True)
+    self.assertAlmostEqual(response.update(100, 7, 0., 3., False, True), -.4)
+    for frame in range(200, 292, 2):
+      self.assertEqual(response.update(frame, 7, 0., .1, True, True), -.4)
+    self.assertAlmostEqual(response.update(292, 7, 0., .1, True, True), .1)
 
   def test_downhill_gas_release_requires_response_and_preserves_brake_authority(self):
     response = OdysseyGasCoastRelease()

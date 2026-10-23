@@ -235,6 +235,8 @@ class OdysseyCoastResponse:
     else:
       if self.coast_start is None:
         self.coast_start = frame
+        # Median observations belong to one uninterrupted coast.
+        self.warmup.pop(gear, None)
       # Acquire the first five settled samples promptly; retain the learned update cadence.
       if frame - self.coast_start >= 50 and (gear not in self.drag or frame % 10 == 0):
         residual = aego - gravity
