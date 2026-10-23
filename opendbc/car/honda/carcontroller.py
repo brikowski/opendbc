@@ -74,12 +74,12 @@ def odyssey_grade_weight(pitch):
   return load * load
 
 
-def odyssey_uphill_gas_accel_with_cap(accel, pitch):
-  """Return the gas-map input and a smooth feedback weight for clipped uphill load."""
+def odyssey_grade_gas_accel(accel, pitch):
+  """Add the grade load before gas calibration and its feedforward ceiling."""
   grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
   if grade < 0.0:
     # Gravity still supplies acceleration when the requested net acceleration is zero.
-    return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade * ODYSSEY_GRADE_GAIN), 0.0
+    return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade * ODYSSEY_GRADE_GAIN)
   zero_grade = min(grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
   if zero_grade > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel <= 0.0:
     gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
@@ -87,19 +87,13 @@ def odyssey_uphill_gas_accel_with_cap(accel, pitch):
       x = (accel - ODYSSEY_ROAD_BRAKE_ENTRY) / (gas_split - ODYSSEY_ROAD_BRAKE_ENTRY)
       zero_grade *= x * x * (3.0 - 2.0 * x)
     # Preserve request sensitivity through zero, even on a steep climb.
-    return accel + zero_grade, 0.0
+    return accel + zero_grade
   if accel <= 0.0:
-    return accel, 0.0
+    return accel
   x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
   grade_weight = x * x * (3.0 - 2.0 * x)
   grade_accel = zero_grade + (grade * ODYSSEY_GRADE_GAIN - zero_grade) * grade_weight
-  mapped = max(accel, min(accel + grade_accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX))
-  if grade_accel > 0.0:
-    limited_fraction = float(np.clip((accel + grade_accel - mapped) / grade_accel, 0.0, 1.0))
-    load = min(grade_accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
-    load_weight = load * load * (3.0 - 2.0 * load)
-    return mapped, limited_fraction * load_weight
-  return mapped, 0.0
+  return accel + grade_accel
 
 
 def odyssey_creep_brake_accel(accel, speed):
@@ -123,6 +117,27 @@ def odyssey_low_speed_gas_command(gas, accel, speed):
   speed_weight = smoothstep((speed - 8.0) / 4.0) * smoothstep((24.0 - speed) / 4.0)
   request_weight = smoothstep((accel - 0.4) / 0.4) * smoothstep((2.0 - accel) / 0.4)
   return max(0.0, gas - ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS * speed_weight * request_weight)
+
+
+def odyssey_gas_feedforward(accel, gas_accel, speed, params):
+  """Apply gas calibration and its uphill ceiling together, before response feedback."""
+  def calibrated(map_accel, request):
+    gas = float(np.interp(map_accel, params.BOSCH_GAS_LOOKUP_BP, params.BOSCH_GAS_LOOKUP_V))
+    return odyssey_low_speed_gas_command(gas, request, speed)
+
+  gas = calibrated(gas_accel, accel)
+  if gas_accel <= accel:
+    return gas, 0.0
+  ceiling_request = max(accel, ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+  capped = min(gas, calibrated(ceiling_request, ceiling_request))
+  cap_weight = 0.0
+  if accel > 0.0 and capped < gas:
+    base = calibrated(accel, accel)
+    if gas > base:
+      limited_fraction = float(np.clip((gas - capped) / (gas - base), 0.0, 1.0))
+      load = min((gas_accel - accel) / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
+      cap_weight = limited_fraction * load * load * (3.0 - 2.0 * load)
+  return capped, cap_weight
 
 
 class OdysseyGasResponse:
@@ -161,16 +176,15 @@ class OdysseyGasResponse:
       self.pitch_peak = pitch
     self.drivetrain = drivetrain
     self.pitch_peak = pitch if self.pitch_peak is None else max(self.pitch_peak, pitch)
-    self.requests.append(request)
-
-    response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
-                                                        ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(cap_weight, 0.0, 1.0))
+    self.requests.append((request, cap_weight))
     # Fresh feedback and warmup use the mapped headroom.
     lower = limits[0]
     upper = limits[1]
     target = 0.0
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
-      delayed_request = self.requests[0]
+      delayed_request, delayed_cap_weight = self.requests[0]
+      response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
+                                                          ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(delayed_cap_weight, 0.0, 1.0))
       residual = self.error.update(delayed_request - aego)
       # Delayed feedback must agree with the latest acceleration error.
       residual = float(np.clip(residual, min(request - aego, 0.0), max(request - aego, 0.0)))
@@ -184,7 +198,7 @@ class OdysseyGasResponse:
       target = float(np.clip(proportional + self.integral, lower, upper))
     else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
-      proportional = float(np.clip(response_gain * min(request - aego, 0.0), lower, 0.0))
+      proportional = float(np.clip(ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * min(request - aego, 0.0), lower, 0.0))
       target = float(np.clip(self.correction, lower, upper))
       # Retain issued correction unless the current error asks for the opposite direction.
       if (request - aego) * target < 0.0:
@@ -581,8 +595,10 @@ class CarController(CarControllerBase):
             bridge_weight = 0.0
             if (odyssey_pitch_valid and CC.orientationNED[1] * self.odyssey_pitch.x > 0.0 and
                 actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed):
-              gas_accel, cap_weight = odyssey_uphill_gas_accel_with_cap(accel, self.odyssey_pitch.x)
+              gas_accel = odyssey_grade_gas_accel(accel, self.odyssey_pitch.x)
               bridge_weight = odyssey_grade_weight(self.odyssey_pitch.x)
+            if actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
+              self.gas, cap_weight = odyssey_gas_feedforward(accel, gas_accel, CS.out.vEgo, self.params)
             passive_response_eligible = 8.0 <= CS.out.vEgo <= 35.0 and passive_accel is not None
             coast_start = self.odyssey_coast_response.coast_start
             settled_coast = (not self.odyssey_brake_selected and coast_start is not None and
@@ -629,23 +645,19 @@ class CarController(CarControllerBase):
               self.odyssey_brake_start_frame = None
             self.odyssey_brake_selected = CC.longActive and brake_selected
             self.odyssey_gas_selected = gas_selected
-            if gas_selected and gas_accel != accel:
-              self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
             # Honda brake holds do not measure gas-only response.
             feedback_eligible = (CC.longActive and gas_selected and previous_gas and
                                  not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
                                  actuators.longControlState == LongCtrlState.pid and
                                  not CS.out.gasPressed and not CS.out.brakePressed and
-                                 coast_state_valid and not brake_feedback_active and (self.gas > 0.0 or response_gas))
-            available_gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
+                                 coast_state_valid and not brake_feedback_active and
+                                 (gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] or response_gas))
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
                                                             cap_weight, CS.odyssey_shift_activity,
-                                                            limits=(-available_gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas))
+                                                            limits=(-self.gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas))
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
-            if gas_selected and actuators.longControlState == LongCtrlState.pid and not CS.out.gasPressed:
-              self.gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             if CC.longActive and brake_selected and not CS.out.gasPressed and not CS.out.brakePressed:
               self.accel = odyssey_creep_brake_accel(self.accel, CS.out.vEgo)
             # A qualified passive-response shortfall can use gas and existing feedback at the map floor.

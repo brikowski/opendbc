@@ -19,7 +19,7 @@ from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY
                                              OdysseyCoastResponse, OdysseyGasCoastRelease, OdysseyGasResponse,
                                              odyssey_command_domains, odyssey_gas_command, odyssey_grade_weight,
                                              odyssey_creep_brake_accel, odyssey_low_speed_gas_command,
-                                             odyssey_uphill_gas_accel_with_cap)
+                                             odyssey_grade_gas_accel, odyssey_gas_feedforward)
 from opendbc.car.honda.values import CAR, CarControllerParams, HondaFlags
 from opendbc.car.honda.carstate import CarState
 from opendbc.car.honda.hondacan import CanBus
@@ -438,39 +438,83 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       self.assertLess(abs(odyssey_low_speed_gas_command(gas(1.1), 1.1, speed - 1e-4) -
                           odyssey_low_speed_gas_command(gas(1.1), 1.1, speed + 1e-4)), 0.01)
 
-  def test_uphill_gas_load_is_continuous_through_negative_transition_and_bounded_at_high_request(self):
+  def test_larger_positive_request_does_not_reduce_gas_in_the_same_vehicle_state(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for eco in (False, True):
+      with self.subTest(eco=eco):
+        commands = []
+        for request in (.50, .52, .54, .56, .58, .60, .62, .64, .66, .68, .70, .72, .74, .76, .78, .80, .90, 1.0):
+          controller = CarController({Bus.pt: dbc}, CP)
+          controller.odyssey_pitch.x = .04
+          control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., .04, 0.])
+          control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+          state = structs.CarState(vEgo=14., aEgo=1., canValid=True, ecoMode=eco, ecoModeValid=True)
+          CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                               odyssey_car_gas=0., odyssey_target_gear=7, odyssey_shift_activity=119,
+                               odyssey_user_brake=0., odyssey_computer_braking=False)
+          parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+          for frame in range(65):
+            control.actuators.accel = request if frame == 64 else .65
+            now = 1_000_000_000 + frame * 10_000_000
+            CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+            _, sends = controller.update(control.as_reader(), CS, now)
+            parser.update([(now, sends)])
+          signals = parser.vl['ACC_CONTROL']
+          self.assertEqual(signals['BRAKE_REQUEST'], 0)
+          self.assertAlmostEqual(signals['ACCEL_COMMAND'], request, delta=.01)
+          commands.append(signals['GAS_COMMAND'])
+        self.assertEqual(commands, sorted(commands))
+
+  def test_gas_response_gain_context_follows_its_delayed_request(self):
+    warmup, capped_warmup = OdysseyGasResponse(), OdysseyGasResponse()
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
+      plain = warmup.update(.2, .24, .04, 19., 7, True, limits=(-600., 600.))
+      extra = capped_warmup.update(.2, .24, .04, 19., 7, True, cap_weight=1., limits=(-600., 600.))
+      self.assertEqual(extra, plain)
+    baseline, changed = OdysseyGasResponse(), OdysseyGasResponse()
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
+      for response in (baseline, changed):
+        response.update(.95, .65, .04, 19., 7, True, limits=(-600., 600.))
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
+      plain = baseline.update(.95, .65, .04, 19., 7, True, limits=(-600., 600.))
+      extra = changed.update(.95, .65, .04, 19., 7, True, cap_weight=1., limits=(-600., 600.))
+      self.assertEqual(extra, plain)
+    plain = baseline.update(.95, .65, .04, 19., 7, True, limits=(-600., 600.))
+    extra = changed.update(.95, .65, .04, 19., 7, True, cap_weight=1., limits=(-600., 600.))
+    self.assertGreater(extra, plain)
+
+  def test_grade_gas_load_is_continuous_through_negative_transition(self):
     pitch = 0.03
     grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
     load = min(grade / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
     zero_grade = grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * load * load
-    self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(0.0, pitch)[0], zero_grade)
-    self.assertGreater(odyssey_uphill_gas_accel_with_cap(-0.10, pitch)[0], -0.10)
-    self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(-0.20, pitch)[0], -0.20 + zero_grade)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(ODYSSEY_ROAD_BRAKE_ENTRY, pitch)[0], ODYSSEY_ROAD_BRAKE_ENTRY)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(0.3, 0.0)[0], 0.3)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(0.0, pitch), zero_grade)
+    self.assertGreater(odyssey_grade_gas_accel(-0.10, pitch), -0.10)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(-0.20, pitch), -0.20 + zero_grade)
+    self.assertEqual(odyssey_grade_gas_accel(ODYSSEY_ROAD_BRAKE_ENTRY, pitch), ODYSSEY_ROAD_BRAKE_ENTRY)
+    self.assertEqual(odyssey_grade_gas_accel(0.3, 0.0), 0.3)
     downhill_grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.6
-    self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(0.3, -pitch)[0], 0.3 - downhill_grade)
-    self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(0.01, pitch)[0] - 0.01, zero_grade, delta=0.001)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(0.3, -pitch), 0.3 - downhill_grade)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(0.01, pitch) - 0.01, zero_grade, delta=0.001)
     expected = ODYSSEY_GRADE_RAMP_ACCEL + math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.6
     self.assertEqual(ODYSSEY_GRADE_GAIN, 0.6)
-    self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(ODYSSEY_GRADE_RAMP_ACCEL, pitch)[0], expected)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(1.2, pitch)[0], 1.2)
-    self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(1.2, -pitch)[0], 1.2 - downhill_grade)
-    self.assertLessEqual(odyssey_uphill_gas_accel_with_cap(0.83, 0.072)[0], ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(ODYSSEY_GRADE_RAMP_ACCEL, pitch), expected)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(1.2, pitch), 1.2 + downhill_grade)
+    self.assertAlmostEqual(odyssey_grade_gas_accel(1.2, -pitch), 1.2 - downhill_grade)
 
   def test_downhill_gas_load_remains_present_through_zero_request(self):
     for pitch in (-0.01, -0.03, -0.08):
       with self.subTest(pitch=pitch):
-        zero = odyssey_uphill_gas_accel_with_cap(0.0, pitch)[0]
+        zero = odyssey_grade_gas_accel(0.0, pitch)
         self.assertLess(zero, -0.05)
         self.assertGreaterEqual(zero, CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])
         requests = [-0.3 + i * 0.001 for i in range(901)]
-        mapped = [odyssey_uphill_gas_accel_with_cap(q, pitch) for q in requests]
-        self.assertTrue(all(left[0] <= right[0] for left, right in zip(mapped, mapped[1:], strict=False)))
-        self.assertTrue(all(weight == 0.0 for _, weight in mapped))
+        mapped = [odyssey_grade_gas_accel(q, pitch) for q in requests]
+        self.assertTrue(all(left <= right for left, right in zip(mapped, mapped[1:], strict=False)))
         for request in (0.0, 0.3, CarControllerParams.BOSCH_GAS_LOOKUP_BP[0] - math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_GRADE_GAIN):
-          self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(request - 1e-6, pitch)[0],
-                                 odyssey_uphill_gas_accel_with_cap(request + 1e-6, pitch)[0], delta=3e-6)
+          self.assertAlmostEqual(odyssey_grade_gas_accel(request - 1e-6, pitch),
+                                 odyssey_grade_gas_accel(request + 1e-6, pitch), delta=3e-6)
 
   def test_small_downhill_requests_preserve_wire_accel_and_stable_domains(self):
     from opendbc.safety.tests.libsafety import libsafety_py
@@ -521,50 +565,72 @@ class TestOdysseyLongitudinal(unittest.TestCase):
 
   def test_negative_request_uphill_gas_scales_with_grade_without_reversing_request_order(self):
     self.assertEqual(ODYSSEY_ZERO_GAS_GRADE_GAIN, 0.25)
-    mild = odyssey_uphill_gas_accel_with_cap(-0.20, 0.02)[0]
-    steep = odyssey_uphill_gas_accel_with_cap(-0.20, 0.07)[0]
+    mild = odyssey_grade_gas_accel(-0.20, 0.02)
+    steep = odyssey_grade_gas_accel(-0.20, 0.07)
     self.assertLess(mild, -0.10)
     self.assertGreater(steep, -0.10)
-    self.assertGreater(odyssey_uphill_gas_accel_with_cap(-0.10, 0.07)[0], 0.0)
+    self.assertGreater(odyssey_grade_gas_accel(-0.10, 0.07), 0.0)
     for pitch in (0.001, 0.02, 0.07, 0.20):
       requests = [ODYSSEY_ROAD_BRAKE_ENTRY + i * 0.001 for i in range(501)]
-      mapped = [odyssey_uphill_gas_accel_with_cap(request, pitch)[0] for request in requests]
+      mapped = [odyssey_grade_gas_accel(request, pitch) for request in requests]
       self.assertTrue(all(left <= right + 1e-10 for left, right in zip(mapped, mapped[1:], strict=False)))
-      self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(-0.20 - 1e-6, pitch)[0],
-                             odyssey_uphill_gas_accel_with_cap(-0.20 + 1e-6, pitch)[0], delta=5e-6)
-      self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(-1e-6, pitch)[0],
-                             odyssey_uphill_gas_accel_with_cap(0.0, pitch)[0], delta=5e-6)
-      self.assertAlmostEqual(odyssey_uphill_gas_accel_with_cap(0.0, pitch)[0],
-                             odyssey_uphill_gas_accel_with_cap(1e-6, pitch)[0], delta=5e-6)
-    self.assertGreater(odyssey_uphill_gas_accel_with_cap(-0.10, 0.08)[0] - odyssey_uphill_gas_accel_with_cap(-0.20, 0.08)[0], 0.09)
-    self.assertLessEqual(odyssey_uphill_gas_accel_with_cap(0.0, 0.50)[0], ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+      self.assertAlmostEqual(odyssey_grade_gas_accel(-0.20 - 1e-6, pitch),
+                             odyssey_grade_gas_accel(-0.20 + 1e-6, pitch), delta=5e-6)
+      self.assertAlmostEqual(odyssey_grade_gas_accel(-1e-6, pitch),
+                             odyssey_grade_gas_accel(0.0, pitch), delta=5e-6)
+      self.assertAlmostEqual(odyssey_grade_gas_accel(0.0, pitch),
+                             odyssey_grade_gas_accel(1e-6, pitch), delta=5e-6)
+    self.assertGreater(odyssey_grade_gas_accel(-0.10, 0.08) - odyssey_grade_gas_accel(-0.20, 0.08), 0.09)
+    self.assertLessEqual(odyssey_grade_gas_accel(0.0, 0.50), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
     self.assertEqual(odyssey_grade_weight(0.0), 0.0)
     self.assertTrue(0.0 < odyssey_grade_weight(0.02) < 1.0)
     self.assertEqual(odyssey_grade_weight(0.05), 1.0)
 
-  def test_uphill_gas_cap_feedback_weight_tracks_limited_grade_only(self):
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(-0.1, 0.03)[1], 0.0)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(0.95, -0.03)[1], 0.0)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(0.3, 0.03)[1], 0.0)
-    request, pitch = 0.95, 0.04
-    mapped, weight = odyssey_uphill_gas_accel_with_cap(request, pitch)
-    grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * ODYSSEY_GRADE_GAIN
-    load = min(grade / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
-    load_weight = load * load * (3.0 - 2.0 * load)
-    self.assertEqual(mapped, ODYSSEY_UPHILL_GAS_ACCEL_MAX)
-    self.assertAlmostEqual(weight, (request + grade - mapped) / grade * load_weight)
-    high_mapped, high_weight = odyssey_uphill_gas_accel_with_cap(1.2, pitch)
-    self.assertEqual(high_mapped, 1.2)
-    self.assertAlmostEqual(high_weight, load_weight)
-    threshold = ODYSSEY_UPHILL_GAS_ACCEL_MAX - grade
-    self.assertLess(odyssey_uphill_gas_accel_with_cap(threshold + 1e-5, pitch)[1], 0.001)
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(threshold - 1e-5, pitch)[1], 0.0)
+  def test_gas_feedforward_keeps_request_order_with_calibrated_uphill_ceiling(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    params = CarControllerParams(CP)
+    for speed in (8., 10., 14., 22., 24., 30.):
+      for pitch in (-.08, 0., .02, .04, .08, .15, .5):
+        with self.subTest(speed=speed, pitch=pitch):
+          commands = []
+          for request in (i * .01 for i in range(-30, 201)):
+            gas, weight = odyssey_gas_feedforward(request, odyssey_grade_gas_accel(request, pitch), speed, params)
+            self.assertTrue(0. <= gas <= params.BOSCH_GAS_LOOKUP_V[-1])
+            self.assertTrue(0. <= weight <= 1.)
+            commands.append(gas)
+          self.assertTrue(all(left <= right + 1e-9 for left, right in zip(commands, commands[1:], strict=False)))
+
+  def test_uphill_gas_cap_feedback_weight_tracks_limited_calibrated_grade(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    params = CarControllerParams(CP)
+
+    def mapped(accel):
+      return (accel + .2) / 2.2 * 2000.
+
+    for request, pitch in ((-.1, .03), (.95, -.03), (.3, .03)):
+      self.assertEqual(odyssey_gas_feedforward(request, odyssey_grade_gas_accel(request, pitch), 19., params)[1], 0.)
+    request, pitch = .95, .04
+    gas_accel = odyssey_grade_gas_accel(request, pitch)
+    gas, weight = odyssey_gas_feedforward(request, gas_accel, 19., params)
+    grade = gas_accel - request
+    load = min(grade / ODYSSEY_GRADE_RAMP_ACCEL, 1.)
+    base = odyssey_low_speed_gas_command(mapped(request), request, 19.)
+    uncapped = odyssey_low_speed_gas_command(mapped(gas_accel), request, 19.)
+    ceiling = odyssey_low_speed_gas_command(mapped(1.), 1., 19.)
+    self.assertAlmostEqual(gas, ceiling)
+    self.assertAlmostEqual(weight, (uncapped - ceiling) / (uncapped - base) * load * load * (3. - 2. * load))
+    high_input = odyssey_grade_gas_accel(1.2, pitch)
+    high_gas, high_weight = odyssey_gas_feedforward(1.2, high_input, 19., params)
+    self.assertAlmostEqual(high_gas, odyssey_low_speed_gas_command(mapped(1.2), 1.2, 19.))
+    self.assertAlmostEqual(high_weight, load * load * (3. - 2. * load))
 
   def test_uphill_gas_cap_feedback_fades_with_vanishing_grade(self):
-    high_request = 1.2
-    self.assertEqual(odyssey_uphill_gas_accel_with_cap(high_request, 0.0)[1], 0.0)
-    self.assertLess(odyssey_uphill_gas_accel_with_cap(high_request, 1e-5)[1], 1e-3)
-    self.assertGreater(odyssey_uphill_gas_accel_with_cap(high_request, 0.08)[1], 0.9)
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    params = CarControllerParams(CP)
+    for pitch, lower, upper in ((0., 0., 0.), (1e-5, 0., 1e-3), (.08, .9, 1.)):
+      weight = odyssey_gas_feedforward(1.2, odyssey_grade_gas_accel(1.2, pitch), 19., params)[1]
+      self.assertGreaterEqual(weight, lower)
+      self.assertLessEqual(weight, upper)
 
   def test_gas_response_cap_weight_increases_only_bounded_feedback(self):
     self.assertGreater(ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL)
@@ -934,12 +1000,11 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           self.assertAlmostEqual(signals['GAS_COMMAND'], output.gas, delta=1.)
           if frame == 298:
             saturated = controller.params.BOSCH_GAS_LOOKUP_V[-1] if achieved < request else 0.
-            self.assertAlmostEqual(output.gas, odyssey_low_speed_gas_command(saturated, request, state.vEgo), delta=1e-4)
+            self.assertAlmostEqual(output.gas, saturated, delta=1e-4)
         self.assertEqual(controller.odyssey_gas_response.integral, 0.)
-        bp, values = controller.params.BOSCH_GAS_LOOKUP_BP, controller.params.BOSCH_GAS_LOOKUP_V
-        gas_request, _ = odyssey_uphill_gas_accel_with_cap(next_request, controller.odyssey_pitch.x)
-        mapped = values[0] + (gas_request - bp[0]) / (bp[-1] - bp[0]) * (values[-1] - values[0])
-        self.assertAlmostEqual(output.gas, odyssey_low_speed_gas_command(mapped, next_request, state.vEgo), delta=1e-4)
+        gas_request = odyssey_grade_gas_accel(next_request, controller.odyssey_pitch.x)
+        mapped, _ = odyssey_gas_feedforward(next_request, gas_request, state.vEgo, controller.params)
+        self.assertAlmostEqual(output.gas, mapped, delta=1e-4)
 
   def test_gas_response_drops_retained_offset_when_feedback_is_invalid(self):
     for change in ('inactive', 'invalid'):
@@ -3036,14 +3101,14 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertEqual(output_parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked == 'coast_shortfall' and request < .3)
 
   def test_uphill_negative_gas_demand_delays_only_an_active_gas_release(self):
-    gas_accel = odyssey_uphill_gas_accel_with_cap(-0.23, 0.03)[0]
+    gas_accel = odyssey_grade_gas_accel(-0.23, 0.03)
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True, gas_accel=gas_accel), (True, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, gas_accel=gas_accel), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True, gas_accel=-0.23), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True,
-                                              gas_accel=odyssey_uphill_gas_accel_with_cap(-0.23, 0.01)[0]), (False, False))
+                                              gas_accel=odyssey_grade_gas_accel(-0.23, 0.01)), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True,
-                                              gas_accel=odyssey_uphill_gas_accel_with_cap(-0.23, 0.07)[0]), (True, False))
+                                              gas_accel=odyssey_grade_gas_accel(-0.23, 0.07)), (True, False))
 
   def test_road_brake_wire_preserves_request_across_grade_and_response(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
