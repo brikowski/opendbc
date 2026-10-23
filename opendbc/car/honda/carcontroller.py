@@ -258,7 +258,7 @@ class OdysseyGasCoastRelease:
 
   def update(self, now_nanos, request, aego, speed, pitch, gear, passive_accel, previous_gas, eligible, gas_floor=False,
              floor_excess=False, downhill=True):
-    exhausted_gas = previous_gas and gas_floor and floor_excess and request < 0.0
+    exhausted_gas = previous_gas and gas_floor and floor_excess
     if (not eligible or (not downhill and not exhausted_gas and not self.exhausted) or not 1 <= gear <= 10 or
         not all(math.isfinite(v) for v in (request, aego, speed, pitch)) or
         (passive_accel is not None and not math.isfinite(passive_accel))):
@@ -274,7 +274,6 @@ class OdysseyGasCoastRelease:
     downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
     # A prior forecast must not immediately undo release from sustained excess at zero gas.
     if (request <= ODYSSEY_ROAD_BRAKE_ENTRY or
-        (request >= 0.0 and passive_accel is None) or
         (passive_accel is not None and passive_accel - request < 0.05 and
          not (self.exhausted and aego - request > ODYSSEY_COAST_RELEASE_ERROR)) or
         not 8.0 <= speed <= 35.0 or
