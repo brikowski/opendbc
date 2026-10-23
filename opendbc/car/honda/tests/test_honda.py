@@ -609,6 +609,51 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       self.assertEqual(update(gear=2), 0.0)
     self.assertGreater(update(gear=2), 0.0)
 
+  def test_launch_gas_response_waits_for_fresh_released_brakes(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, aego, feedback in product((False, True), (0., 1.), ('computer', 'pressure', 'stale', 'missing')):
+      with self.subTest(econ=econ, aego=aego, feedback=feedback):
+        controller = CarController({Bus.pt: dbc}, CP)
+        state = structs.CarState(vEgo=0., aEgo=aego, canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False,
+                             acc_hud={}, lkas_hud={}, stock_brake={}, odyssey_car_gas=0.,
+                             odyssey_engine_torque_ts_nanos=0, odyssey_target_gear=1, odyssey_shift_activity=30,
+                             odyssey_target_gear_ts_nanos=0, odyssey_user_brake=0.,
+                             odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = .3
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        for frame in range(132):
+          now = 1_000_000_000 + frame * 10_000_000
+          holding = frame < 80
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = now
+          CS.odyssey_computer_braking_ts_nanos = (0 if feedback == 'missing' else now - 100_000_000) if holding else now
+          if feedback in ('computer', 'pressure'):
+            CS.odyssey_computer_braking_ts_nanos = now
+          CS.odyssey_computer_braking = holding and feedback == 'computer'
+          CS.odyssey_user_brake = .03125 if holding and feedback == 'pressure' else 0.
+          if not holding:
+            state.aEgo = 0.
+          output, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, sends)])
+          wire = parser.vl['ACC_CONTROL']
+          self.assertAlmostEqual(wire['ACCEL_COMMAND'], .3, delta=.005)
+          self.assertEqual(wire['BRAKE_REQUEST'], 0)
+          self.assertEqual(wire['STANDSTILL'], 0)
+          self.assertEqual(wire['STANDSTILL_RELEASE'], 1)
+          self.assertGreater(wire['GAS_COMMAND'], 0.)
+          response = controller.odyssey_gas_response
+          if holding:
+            self.assertFalse(response.requests)
+            self.assertEqual(response.integral, 0.)
+            self.assertEqual(response.correction, 0.)
+            self.assertAlmostEqual(output.gas, 2000. * (.3 + .2) / 2.2, delta=1.)
+          elif frame < 130:
+            self.assertEqual(response.correction, 0.)
+        self.assertGreater(response.correction, 0.)
+
   def test_gas_response_reduces_startup_overacceleration_without_adding_gas(self):
     response = OdysseyGasResponse()
     for _ in range(15):
@@ -1056,7 +1101,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
             target = 0 if blocked == 'neutral' else 13 if blocked == 'reverse' else target
             stamp = {'last_fresh': now - 59_999_999, 'stale': now - 60_000_000, 'future': now + 1}.get(blocked, stamp)
           parsers[Bus.pt].update([(stamp, [packer.make_can_msg('GEARBOX_AUTO', 1,
-                                     {'TRANS_TARGET_GEAR': target, 'GEAR_SHIFTER': 4})])])
+                                     {'TRANS_TARGET_GEAR': target, 'GEAR_SHIFTER': 4}),
+                                         packer.make_can_msg('VSA_STATUS', 1, {})])])
           state = CS.update(parsers)
           state.vEgo = speed
           state.aEgo = 0.
@@ -1095,7 +1141,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           now = 1_000_000_000 + frame * 10_000_000
           activity = 110 if changed and frame >= 80 else 102
           parsers[Bus.pt].update([(now - 5_000_000, [packer.make_can_msg('GEARBOX_AUTO', 1,
-                                     {'TRANS_TARGET_GEAR': 6, 'TRANS_SHIFT_ACTIVITY': activity, 'GEAR_SHIFTER': 4})])])
+                                     {'TRANS_TARGET_GEAR': 6, 'TRANS_SHIFT_ACTIVITY': activity, 'GEAR_SHIFTER': 4}),
+                                                   packer.make_can_msg('VSA_STATUS', 1, {})])])
           state = CS.update(parsers)
           state.vEgo, state.aEgo, state.canValid = speed, achieved, True
           CS.out = state
@@ -1154,7 +1201,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
                              odyssey_user_brake=0., odyssey_computer_braking=False, odyssey_computer_braking_ts_nanos=0)
 
       def step(frame):
-        CS.odyssey_target_gear_ts_nanos = frame * 10_000_000
+        CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = frame * 10_000_000
         _, sends = controller.update(control.as_reader(), CS, frame * 10_000_000)
         messages = [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1]
         if messages:

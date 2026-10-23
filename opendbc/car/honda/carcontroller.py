@@ -630,11 +630,12 @@ class CarController(CarControllerBase):
             self.odyssey_gas_selected = gas_selected
             if gas_selected and gas_accel != accel:
               self.gas = float(np.interp(gas_accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
+            # Honda brake holds do not measure gas-only response.
             feedback_eligible = (CC.longActive and gas_selected and previous_gas and
                                  not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
                                  actuators.longControlState == LongCtrlState.pid and
                                  not CS.out.gasPressed and not CS.out.brakePressed and
-                                 gear_state_valid and (self.gas > 0.0 or response_gas))
+                                 coast_state_valid and not brake_feedback_active and (self.gas > 0.0 or response_gas))
             available_gas = odyssey_low_speed_gas_command(self.gas, accel, CS.out.vEgo)
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
