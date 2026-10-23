@@ -212,7 +212,8 @@ class OdysseyGasResponse:
     return self.correction
 
 
-def odyssey_brake_release(now_nanos, request, aego, previous_brake, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None):
+def odyssey_brake_release(now_nanos, request, aego, previous_brake, braking_ts_nanos, car_gas, gear, eligible, passive_accel=None,
+                          coast_from_brake=False):
   """Prefer qualified coast when it can supply the requested deceleration."""
   if (not eligible or passive_accel is None or not all(math.isfinite(v) for v in (request, aego, car_gas, gear, passive_accel)) or
       not 1 <= gear <= 10 or car_gas != 0 or
@@ -220,7 +221,8 @@ def odyssey_brake_release(now_nanos, request, aego, previous_brake, braking_ts_n
     return False
   # Require excess braking to release; tolerate the existing response margin while coasting.
   margin = -ODYSSEY_COAST_RELEASE_ERROR if previous_brake else ODYSSEY_COAST_RELEASE_ERROR
-  return request < 0.0 and passive_accel <= request and aego < request + margin
+  forecast_margin = ODYSSEY_COAST_RELEASE_ERROR if coast_from_brake and not previous_brake and aego <= request else 0.0
+  return request < 0.0 and passive_accel <= request + forecast_margin and aego < request + margin
 
 
 class OdysseyCoastResponse:
@@ -530,6 +532,7 @@ class CarController(CarControllerBase):
         ts = self.frame * DT_CTRL
 
         if self.CP.flags & HondaFlags.BOSCH:
+          previous_accel = self.accel
           self.accel = float(np.clip(accel, self.params.BOSCH_ACCEL_MIN, self.params.BOSCH_ACCEL_MAX))
           previous_gas_command = self.gas
           self.gas = float(np.interp(accel, self.params.BOSCH_GAS_LOOKUP_BP, self.params.BOSCH_GAS_LOOKUP_V))
@@ -578,7 +581,7 @@ class CarController(CarControllerBase):
               CS.odyssey_car_gas, CS.odyssey_target_gear,
               coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
               (not self.odyssey_brake_selected or brake_feedback_active),
-              passive_accel)
+              passive_accel, settled_brake and accel >= previous_accel)
             # A single wheel-acceleration dip must not override a settled coast forecast.
             brake_error = accel - CS.out.aEgo
             if (self.odyssey_brake_selected and coast_eligible and coast_state_valid and
