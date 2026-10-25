@@ -219,9 +219,9 @@ def odyssey_brake_release(now_nanos, request, aego, previous_brake, braking_ts_n
       not 1 <= gear <= 10 or car_gas != 0 or
       braking_ts_nanos <= 0 or not 0 <= now_nanos - braking_ts_nanos < 60_000_000):
     return False
-  # Require excess braking to release; tolerate the existing response margin while coasting.
+  # Require excess braking to release; tolerate the existing response margin for a qualified handoff.
   margin = -ODYSSEY_COAST_RELEASE_ERROR if previous_brake else ODYSSEY_COAST_RELEASE_ERROR
-  forecast_margin = ODYSSEY_COAST_RELEASE_ERROR if coast_from_brake and not previous_brake and aego <= request else 0.0
+  forecast_margin = ODYSSEY_COAST_RELEASE_ERROR if coast_from_brake and aego <= request else 0.0
   return request < 0.0 and passive_accel <= request + forecast_margin and aego < request + margin
 
 
@@ -576,12 +576,6 @@ class CarController(CarControllerBase):
               coast_eligible and coast_state_valid, math.floor(previous_gas_command + 0.5) == 0,
               response_excess and CS.odyssey_car_gas == 0.0 and not CS.odyssey_computer_braking and abs(CS.odyssey_user_brake) <= 0.015625,
               odyssey_pitch_valid and CC.orientationNED[1] < 0.0 and self.odyssey_pitch.x < 0.0)
-            release_brake = odyssey_brake_release(
-              now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
-              CS.odyssey_car_gas, CS.odyssey_target_gear,
-              coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
-              (not self.odyssey_brake_selected or brake_feedback_active),
-              passive_accel, settled_brake and accel >= previous_accel)
             # A single wheel-acceleration dip must not override a settled coast forecast.
             brake_error = accel - CS.out.aEgo
             if (self.odyssey_brake_selected and coast_eligible and coast_state_valid and
@@ -590,6 +584,13 @@ class CarController(CarControllerBase):
               self.odyssey_brake_response_error.update(brake_error)
             else:
               self.odyssey_brake_response_error.x = 0.0
+            release_brake = odyssey_brake_release(
+              now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
+              CS.odyssey_car_gas, CS.odyssey_target_gear,
+              coast_eligible and coast_state_valid and CS.out.vEgo >= 8.0 and
+              (not self.odyssey_brake_selected or brake_feedback_active),
+              passive_accel, settled_brake and accel >= previous_accel and
+              (not self.odyssey_brake_selected or self.odyssey_brake_response_error.x > ODYSSEY_COAST_RELEASE_ERROR))
             release_brake |= (settled_brake and accel > 0.0 and
                               brake_error > ODYSSEY_COAST_RELEASE_ERROR and
                               self.odyssey_brake_response_error.x > ODYSSEY_COAST_RELEASE_ERROR)

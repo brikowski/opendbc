@@ -3037,6 +3037,91 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           self.assertEqual(controller.odyssey_coast_response.drag[6], drag)
           self.assertFalse(controller.odyssey_coast_response.warmup)
 
+  def test_settled_excess_braking_can_release_to_a_close_coast_forecast(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ in (False, True):
+      with self.subTest(econ=econ):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.accel = -.2
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_brake_selected = True
+        controller.odyssey_brake_start_frame = 0
+        controller.odyssey_coast_response.gear = 6
+        controller.odyssey_coast_response.drag[6] = -.15
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = -.2
+        controller.accel = control.actuators.accel
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=20., aEgo=-.55, canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=102, odyssey_target_gear=6,
+                             odyssey_user_brake=.25, odyssey_computer_braking=True)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        released = False
+        for _ in range(50):
+          now = 1_000_000_000 + controller.frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          output, sends = controller.update(control.as_reader(), CS, now)
+          if not any(msg[0] == 0x1DF for msg in sends):
+            continue
+          parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          values = parser.vl['ACC_CONTROL']
+          if not released:
+            self.assertEqual(values['BRAKE_REQUEST'], controller.odyssey_brake_response_error.x <= .2)
+          released |= not values['BRAKE_REQUEST']
+          self.assertEqual(values['GAS_COMMAND'], -30000)
+          self.assertAlmostEqual(values['ACCEL_COMMAND'], -.2, delta=.01)
+          self.assertAlmostEqual(output.accel, -.2, delta=1e-5)
+        self.assertTrue(released)
+        self.assertEqual(controller.odyssey_coast_response.drag[6], -.15)
+        self.assertFalse(controller.odyssey_coast_response.warmup)
+        control.actuators.accel = -.35
+        for _ in range(2):
+          now = 2_000_000_000 + controller.frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+        self.assertTrue(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'])
+        self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], -.35, delta=.01)
+
+  def test_initial_coast_margin_requires_settled_consistent_excess(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, blocked in product((False, True), (None, 'cold', 'unsettled', 'gear_change', 'stronger', 'mode_switch',
+                                               'response', 'forecast', 'invalid_can', 'low_speed', 'high_speed')):
+      with self.subTest(econ=econ, blocked=blocked):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.accel = -.1 if blocked == 'stronger' else -.2
+        controller.odyssey_eco_mode = not econ if blocked == 'mode_switch' else econ
+        controller.odyssey_brake_selected = True
+        controller.odyssey_brake_start_frame = 80 if blocked == 'unsettled' else 0
+        controller.odyssey_brake_response_error.x = 0. if blocked == 'cold' else .3
+        controller.odyssey_coast_response.gear = 5 if blocked == 'gear_change' else 6
+        controller.odyssey_coast_response.drag[6] = .01 if blocked == 'forecast' else -.15
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = -.2
+        if blocked != 'stronger':
+          controller.accel = control.actuators.accel
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=7.9 if blocked == 'low_speed' else 35.1 if blocked == 'high_speed' else 20.,
+                                 aEgo=-.35 if blocked == 'response' else -.55, canValid=blocked != 'invalid_can',
+                                 ecoMode=econ, ecoModeValid=True)
+        now = 2_000_000_000
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=102, odyssey_target_gear=6,
+                             odyssey_user_brake=.25, odyssey_computer_braking=True,
+                             odyssey_engine_torque_ts_nanos=now, odyssey_target_gear_ts_nanos=now,
+                             odyssey_computer_braking_ts_nanos=now)
+        _, sends = controller.update(control.as_reader(), CS, now)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked is not None)
+        self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
+        self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], -.2, delta=.01)
+
   def test_forecast_tolerance_requires_a_settled_same_gear_brake_handoff(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
@@ -3065,11 +3150,11 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
         self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], -.35, delta=.01)
 
-  def test_forecast_tolerance_never_relaxes_initial_brake_release(self):
-    for context, forecast in product((False, True), (-.34, -.16)):
+  def test_initial_forecast_margin_requires_a_qualified_handoff(self):
+    for context, forecast in product((False, True), (-.34, -.16, -.14)):
       with self.subTest(context=context, forecast=forecast):
-        self.assertFalse(odyssey_brake_release(1_000_000_000, -.35, -.7, True, 995_000_000,
-                                               0., 6, True, forecast, context))
+        self.assertEqual(odyssey_brake_release(1_000_000_000, -.35, -.7, True, 995_000_000,
+                                               0., 6, True, forecast, context), context and forecast <= -.15)
 
   def test_forecast_tolerance_preserves_needed_braking(self):
     for forecast, actual, released in [(-.34, -.65, True), (-.15, -.65, True), (-.14, -.65, False),
