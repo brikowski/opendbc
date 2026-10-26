@@ -1978,14 +1978,29 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertEqual(controller.odyssey_gas_coast_release.active, expected_release)
         self.assertEqual(controller.odyssey_gas_coast_release.exhausted, expected_release)
 
-  def test_exhausted_positive_request_coast_yields_when_excess_acceleration_ends(self):
-    for forecast in (None, -.3, .5):
-      with self.subTest(forecast=forecast):
+  def test_exhausted_coast_yields_to_response_request_or_invalid_state(self):
+    for request, forecast_offset in product((-.1, 0., .1), (None, -.3, .02, .5)):
+      forecast = None if forecast_offset is None else request + forecast_offset
+      with self.subTest(request=request, forecast=forecast):
         release = OdysseyGasCoastRelease()
-        self.assertTrue(release.update(0, .1, .4, 20., 0., 7, forecast, True, True, True, True, False))
+        self.assertTrue(release.update(0, request, request + .3, 20., 0., 7, forecast, True, True, True, True, False))
         for frame in range(1, 30):
-          self.assertTrue(release.update(frame * 20_000_000, .1, .4, 20., 0., 7, forecast, False, True, downhill=False))
-        self.assertFalse(release.update(600_000_000, .1, .14, 20., 0., 7, forecast, False, True, downhill=False))
+          excess = .3 if frame < 10 else .19 if frame < 20 else .06
+          self.assertTrue(release.update(frame * 20_000_000, request, request + excess, 20., 0., 7, forecast, False, True,
+                                         downhill=False))
+        now = 600_000_000
+        for next_request, achieved, speed, gear, eligible in (
+          (request, request + .04, 20., 7, True),
+          (-.4, request + .3, 20., 7, True),
+          (request, request + .3, 7.99, 7, True),
+          (request, request + .3, 35.01, 7, True),
+          (request, request + .3, 20., 8, True),
+          (request, request + .3, 20., 7, False),
+        ):
+          self.assertTrue(release.update(now, request, request + .3, 20., 0., 7, forecast, True, True, True, True, False))
+          self.assertFalse(release.update(now + 20_000_000, next_request, achieved, speed, 0., gear, forecast, False, eligible,
+                                          downhill=False))
+          now += 40_000_000
 
   def test_downhill_coast_waits_for_the_issued_zero_gas_command(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

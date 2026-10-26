@@ -290,10 +290,10 @@ class OdysseyGasCoastRelease:
     request_slope = (request - prior[1]) / ((now_nanos - prior[0]) * 1e-9) if prior is not None else 0.0
 
     downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
-    # A prior forecast must not immediately undo release from sustained excess at zero gas.
+    # A prior forecast must not undo exhausted-gas coast while measured excess remains.
     if (request <= ODYSSEY_ROAD_BRAKE_ENTRY or
         (passive_accel is not None and passive_accel - request < 0.05 and
-         not (self.exhausted and aego - request > ODYSSEY_COAST_RELEASE_ERROR)) or
+         not self.exhausted) or
         not 8.0 <= speed <= 35.0 or
         (downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY and not self.exhausted) or
         aego - request < 0.05):
