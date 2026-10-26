@@ -950,7 +950,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
         self.assertEqual(correction, issued)
 
-  def test_gas_response_warmup_reduction_needs_live_error_and_headroom(self):
+  def test_gas_response_warmup_reduction_respects_headroom(self):
     for lower, achieved in product((-5., -50.), (0., .2, .4)):
       with self.subTest(lower=lower, achieved=achieved):
         response = OdysseyGasResponse()
@@ -964,12 +964,50 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertLessEqual(correction, 0.)
         self.assertGreaterEqual(response.integral, lower)
         self.assertLessEqual(response.integral, 0.)
-        if achieved < .2 or (achieved > .2 and lower == -5.):
+        if (achieved < .2 or achieved > .2) and lower == -5.:
           self.assertEqual(response.integral, 0.)
         else:
           self.assertLess(response.integral, 0.)
         self.assertFalse(response.error.initialized)
         self.assertEqual(len(response.requests), 1)
+
+  def test_shift_sample_does_not_erase_gas_reduction(self):
+    for change in ('gear', 'activity', 'clear'):
+      with self.subTest(change=change):
+        response = OdysseyGasResponse()
+        for _ in range(300):
+          response.update(.2, .4, 0., 20., 6, True, shift_activity=102, limits=(-600., 600.))
+        issued = response.correction
+        self.assertLess(issued, -50.)
+        if change == 'clear':
+          response.clear_observer()
+        gear = 7 if change == 'gear' else 6
+        activity = 110 if change == 'activity' else 102
+        retained = issued + .02 * ODYSSEY_RESPONSE_COUNTS_PER_ACCEL
+        for frame in range(ODYSSEY_RESPONSE_DELAY_FRAMES):
+          achieved = .18 if frame == 0 else .1 if frame == 1 else .2
+          if frame == 1:
+            retained += ODYSSEY_RESPONSE_SLEW_COUNTS
+          correction = response.update(.2, achieved, 0., 20., gear, True,
+                                       shift_activity=activity, limits=(-600., 600.))
+          self.assertAlmostEqual(correction, retained)
+          self.assertFalse(response.error.initialized)
+        # Fresh sustained under-response still restores gas after the observer is ready.
+        for _ in range(100):
+          previous = response.correction
+          correction = response.update(.2, .1, 0., 20., gear, True,
+                                       shift_activity=activity, limits=(-600., 600.))
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertGreater(correction, retained)
+
+  def test_gas_response_reverse_error_respects_integral_headroom(self):
+    for lower in (-5., -50., -600.):
+      with self.subTest(lower=lower):
+        response = OdysseyGasResponse()
+        response.correction = 20.
+        response.update(.2, .7, 0., 20., 6, True, limits=(lower, 600.))
+        self.assertEqual(response.integral, 0.)
+        self.assertLessEqual(abs(response.correction - 20.), ODYSSEY_RESPONSE_SLEW_COUNTS)
 
   def test_gas_feedback_preserves_headroom_after_a_request_change(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
