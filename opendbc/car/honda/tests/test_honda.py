@@ -183,6 +183,17 @@ class TestOdysseySteering(unittest.TestCase):
           self.assertEqual(value, output.torqueOutputCan)
           self.assertAlmostEqual(output.torque, -value / limit, places=6)
           self.assertLessEqual(abs(value), limit)
+          # Compare each ramp with elapsed-time slew, allowing only wire quantization.
+          step = 7680 * DT_CTRL / limit
+          if frame < 100:
+            expected = min(step * (frame + 1), .75)
+          elif frame < 180:
+            expected = min(.75 + step * (frame - 99), 1.)
+          elif frame < 280:
+            expected = max(1. - step * (frame - 179), -.5)
+          else:
+            expected = min(step * (frame - 280), .25)
+          self.assertLessEqual(abs(value + direction * expected * limit), 1.000001)
           if frame and frame not in (280, 281):
             self.assertLessEqual(abs(value - counts[-1]), 77)
           counts.append(value)

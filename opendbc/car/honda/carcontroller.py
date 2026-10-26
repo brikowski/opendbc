@@ -472,10 +472,10 @@ class CarController(CarControllerBase):
     # steer torque is converted back to CAN reference (positive when steering right)
     apply_torque = int(np.clip(-limited_torque, -1.0, 1.0) * self.params.STEER_MAX)
     if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
-      # Report the emitted command and restart inactive steering from zero.
+      # Retain fractional slew state, bound it at saturation, and restart inactive steering from zero.
       if not CC.latActive:
         apply_torque = 0
-      self.last_torque = -apply_torque / self.params.STEER_MAX
+      self.last_torque = float(np.clip(limited_torque, -1.0, 1.0)) if CC.latActive else 0.0
 
     # Send CAN commands
     can_sends = []
@@ -711,7 +711,7 @@ class CarController(CarControllerBase):
     new_actuators.accel = self.accel
     new_actuators.gas = self.gas
     new_actuators.brake = self.brake
-    new_actuators.torque = self.last_torque
+    new_actuators.torque = -apply_torque / self.params.STEER_MAX if self.CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR else self.last_torque
     new_actuators.torqueOutputCan = apply_torque
 
     self.frame += 1
