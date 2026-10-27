@@ -1017,8 +1017,26 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         response = OdysseyGasResponse()
         response.correction = 20.
         response.update(.2, .7, 0., 20., 6, True, limits=(lower, 600.))
-        self.assertEqual(response.integral, 0.)
+        self.assertGreaterEqual(response.integral, lower)
+        self.assertLessEqual(response.integral, 20.)
         self.assertLessEqual(abs(response.correction - 20.), ODYSSEY_RESPONSE_SLEW_COUNTS)
+
+  def test_small_excess_does_not_erase_issued_gas_after_observer_restart(self):
+    for change, excess in product(('gear', 'activity', 'clear'), (1e-6, .001, .02)):
+      with self.subTest(change=change, excess=excess):
+        response = OdysseyGasResponse()
+        for _ in range(100):
+          response.update(.2, .17, .04, 20., 6, True, cap_weight=1.,
+                          shift_activity=102, limits=(-600., 600.))
+        issued = response.correction
+        self.assertGreater(issued, 10.)
+        if change == 'clear':
+          response.clear_observer()
+        correction = response.update(.2, .2 + excess, .04, 20., 7 if change == 'gear' else 6, True,
+                                     cap_weight=1., shift_activity=110 if change == 'activity' else 102,
+                                     limits=(-600., 600.))
+        self.assertLess(correction, issued)
+        self.assertLessEqual(issued - correction, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * excess + 1e-8)
 
   def test_gas_feedback_preserves_headroom_after_a_request_change(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -1089,6 +1107,30 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           if changed:
             errors.append(abs(.2 - achieved))
         self.assertLess(max(errors), .003)
+
+  def test_capped_gas_response_does_not_reintroduce_error_after_observer_restart(self):
+    # An illustrative plant checks state continuity, not the Honda gas-map gain.
+    for change in ('gear', 'activity', 'clear'):
+      with self.subTest(change=change):
+        response = OdysseyGasResponse()
+        achieved = .14
+        delay = deque([achieved] * ODYSSEY_RESPONSE_DELAY_FRAMES)
+        before, after = [], []
+        for frame in range(2200):
+          changed = frame >= 2000
+          if frame == 2000 and change == 'clear':
+            response.clear_observer()
+          correction = response.update(.2, achieved, .04, 20., 7 if changed and change == 'gear' else 6, True,
+                                       cap_weight=1., shift_activity=110 if changed and change == 'activity' else 102,
+                                       limits=(-600., 600.))
+          delay.append(.14 + .003 * correction)
+          achieved += (delay.popleft() - achieved) * .02 / (.15 + .02)
+          if 1900 <= frame < 2000:
+            before.append(abs(.2 - achieved))
+          elif changed:
+            after.append(abs(.2 - achieved))
+        self.assertLess(max(before), .003)
+        self.assertLess(max(after), .003)
 
   def test_gas_response_preserves_issued_correction_through_observer_warmup(self):
     for change in ('gear', 'activity', 'grade'):

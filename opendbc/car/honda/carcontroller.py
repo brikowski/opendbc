@@ -200,11 +200,11 @@ class OdysseyGasResponse:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
       proportional = float(np.clip(ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * min(request - aego, 0.0), lower, 0.0))
       target = float(np.clip(self.correction, lower, upper))
-      # Scale restoration of issued gas reductions to the current error.
+      # Scale withdrawal of an issued correction to the current reverse error.
       if (request - aego) * target < 0.0:
-        target = float(np.clip(target + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * (request - aego), lower, 0.0))
+        target = float(np.clip(target + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * (request - aego), lower, max(target, 0.0)))
       if request < aego:
-        target = min(target, proportional)
+        target = min(target, max(self.correction, 0.0) + proportional)
       # Seed the offset after accounting for the current proportional reduction.
       self.integral = target - proportional
     self.correction = float(np.clip(target, self.correction - ODYSSEY_RESPONSE_SLEW_COUNTS,
