@@ -296,7 +296,9 @@ class OdysseyGasCoastRelease:
          not self.exhausted) or
         not 8.0 <= speed <= 35.0 or
         (downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY and not self.exhausted) or
-        aego - request < 0.05):
+        (aego - request < 0.05 and not
+         (passive_accel is not None and passive_accel - request >= 0.05 and
+          aego >= request - ODYSSEY_COAST_RELEASE_ERROR))):
       self.active = self.exhausted = False
     if (not self.active and (previous_gas or passive_accel is not None) and 8.0 <= speed <= 35.0 and
         ODYSSEY_ROAD_BRAKE_ENTRY < request and

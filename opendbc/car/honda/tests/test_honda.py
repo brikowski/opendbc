@@ -1758,7 +1758,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertEqual(odyssey_command_domains(-0.40, 25.0, previous_gas=True, release_gas=True), (False, True))
     self.assertEqual(odyssey_command_domains(-0.15, 4.0, previous_gas=True, release_gas=True), (False, True))
     self.assertTrue(response.update(42 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, False, True))
-    self.assertFalse(response.update(44 * 10_000_000, -0.15, -0.11, 25.0, -0.03, 9, 0.09, False, True))
+    self.assertTrue(response.update(44 * 10_000_000, -0.15, -0.11, 25.0, -0.03, 9, 0.09, False, True))
+    self.assertFalse(response.update(45 * 10_000_000, -0.15, -0.36, 25.0, -0.03, 9, 0.09, False, True))
     self.assertFalse(response.update(46 * 10_000_000, 0.10, 0.30, 25.0, -0.03, 9, 0.09, True, True))
     self.assertFalse(response.update(48 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
     self.assertFalse(response.requests)
@@ -1773,7 +1774,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertFalse(response.update(24 * 10_000_000, -0.15, 0.30, 25.0, -0.03, 9, 0.09, True, False))
 
   def test_downhill_coast_follows_positive_demand_and_measured_response(self):
-    for request, aego, passive in ((0.35, 0.60, 0.30), (0.05, 0.06, 0.30), (0.05, 0.60, 0.0)):
+    for request, aego, passive in ((0.35, 0.60, 0.30), (0.05, -0.16, 0.30), (0.05, 0.60, 0.0)):
       response = OdysseyGasCoastRelease()
       self.assertTrue(response.update(0, 0.05, 0.60, 20.0, -0.04, 7, 0.30, True, True))
       self.assertEqual(odyssey_command_domains(0.05, 20.0, previous_gas=True, release_gas=True), (False, False))
@@ -1824,6 +1825,59 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertGreater(parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
         self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
         self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], 0.05)
+
+  def test_prior_coast_forecast_tolerates_small_response_changes(self):
+    for request, excess in product((-.1, 0., .1), (.04, 0., -.01, -.19)):
+      with self.subTest(request=request, excess=excess):
+        response = OdysseyGasCoastRelease()
+        self.assertFalse(response.update(0, request, request + excess, 20., -.04, 7, request + .25, True, True))
+        self.assertTrue(response.update(20_000_000, request, request + .3, 20., -.04, 7, request + .25, True, True))
+        self.assertTrue(response.update(40_000_000, request, request + excess, 20., -.04, 7, request + .25, False, True))
+        self.assertEqual(odyssey_command_domains(request, 20., release_gas=response.active), (False, False))
+
+  def test_prior_coast_avoids_gas_pulse_and_yields_to_demand_in_both_modes(self):
+    for econ, escape in product((False, True), ('request', 'shortfall', 'mode')):
+      with self.subTest(econ=econ, escape=escape):
+        CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+        controller = CarController({Bus.pt: DBC[CP.carFingerprint][Bus.pt]}, CP)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=20., aEgo=.09, canValid=True, ecoModeValid=True, ecoMode=econ)
+        CS.odyssey_car_gas = CS.odyssey_user_brake = 0.
+        CS.odyssey_computer_braking = False
+        CS.odyssey_target_gear = 7
+        CS.odyssey_shift_activity = 119
+        controller.odyssey_eco_mode = econ
+        controller.frame = 102
+        controller.odyssey_pitch.x = -.04
+        controller.odyssey_coast_response.gear = 7
+        controller.odyssey_coast_response.coast_start = 0
+        controller.odyssey_coast_response.drag[7] = .25 + ACCELERATION_DUE_TO_GRAVITY * math.sin(-.04)
+        self.assertTrue(controller.odyssey_gas_coast_release.update(980_000_000, .1, .4, 20., -.04, 7, .25,
+                                                                    True, True, True, True))
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., -.04, 0.])
+        control.actuators.accel = .1
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(DBC[CP.carFingerprint][Bus.pt], [('ACC_CONTROL', 0)], 1)
+        for phase in (0, 1):
+          now = 1_000_000_000 + phase * 20_000_000
+          controller.frame = 102 + phase * 2
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          if phase:
+            if escape == 'request':
+              control.actuators.accel = .6
+            elif escape == 'shortfall':
+              CS.out.aEgo = -.11
+            else:
+              CS.out.ecoMode = not econ
+          output, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertAlmostEqual(output.accel, control.actuators.accel, delta=.005)
+          if phase:
+            self.assertGreater(parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
+          else:
+            self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
 
   def test_downhill_gas_floor_releases_without_coast_history_only_on_falling_request(self):
     def run(gas_floor, pitch=-0.04, aego=0.4, request=-0.12):
@@ -2042,17 +2096,18 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           self.assertTrue(release.update(frame * 20_000_000, request, request + excess, 20., 0., 7, forecast, False, True,
                                          downhill=False))
         now = 600_000_000
-        for next_request, achieved, speed, gear, eligible in (
+        for index, (next_request, achieved, speed, gear, eligible) in enumerate((
           (request, request + .04, 20., 7, True),
+          (request, request - .21, 20., 7, True),
           (-.4, request + .3, 20., 7, True),
           (request, request + .3, 7.99, 7, True),
           (request, request + .3, 35.01, 7, True),
           (request, request + .3, 20., 8, True),
           (request, request + .3, 20., 7, False),
-        ):
+        )):
           self.assertTrue(release.update(now, request, request + .3, 20., 0., 7, forecast, True, True, True, True, False))
-          self.assertFalse(release.update(now + 20_000_000, next_request, achieved, speed, 0., gear, forecast, False, eligible,
-                                          downhill=False))
+          self.assertEqual(release.update(now + 20_000_000, next_request, achieved, speed, 0., gear, forecast, False, eligible,
+                                         downhill=False), index == 0 and forecast_offset == .5)
           now += 40_000_000
 
   def test_downhill_coast_waits_for_the_issued_zero_gas_command(self):
