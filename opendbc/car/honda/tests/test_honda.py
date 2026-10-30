@@ -11,7 +11,6 @@ from opendbc.can.parser import CANParser
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL, Bus, gen_empty_fingerprint, structs
 from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
-                                             ODYSSEY_ZERO_GAS_GRADE_GAIN,
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
                                              ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_SLEW_COUNTS,
                                              ODYSSEY_ROAD_BRAKE_ENTRY,
@@ -499,7 +498,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     pitch = 0.03
     grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY
     load = min(grade / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
-    zero_grade = grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * load * load
+    zero_grade = grade * ODYSSEY_GRADE_GAIN * load * load
     self.assertAlmostEqual(odyssey_grade_gas_accel(0.0, pitch), zero_grade)
     self.assertGreater(odyssey_grade_gas_accel(-0.10, pitch), -0.10)
     self.assertAlmostEqual(odyssey_grade_gas_accel(-0.20, pitch), -0.20 + zero_grade)
@@ -575,7 +574,6 @@ class TestOdysseyLongitudinal(unittest.TestCase):
       self.assertLessEqual(gas[2], gas[1])
 
   def test_negative_request_uphill_gas_scales_with_grade_without_reversing_request_order(self):
-    self.assertEqual(ODYSSEY_ZERO_GAS_GRADE_GAIN, 0.25)
     mild = odyssey_grade_gas_accel(-0.20, 0.02)
     steep = odyssey_grade_gas_accel(-0.20, 0.07)
     self.assertLess(mild, -0.10)
@@ -596,6 +594,12 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(odyssey_grade_weight(0.0), 0.0)
     self.assertTrue(0.0 < odyssey_grade_weight(0.02) < 1.0)
     self.assertEqual(odyssey_grade_weight(0.05), 1.0)
+
+  def test_uphill_load_is_consistent_across_zero_and_positive_requests(self):
+    for pitch, request in product((.04, .07, .09), (-.2, -.1, 0., .05, .2, .3, 1.)):
+      with self.subTest(pitch=pitch, request=request):
+        load = ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch) * ODYSSEY_GRADE_GAIN
+        self.assertAlmostEqual(odyssey_grade_gas_accel(request, pitch) - request, load)
 
   def test_gas_feedforward_keeps_request_order_with_calibrated_uphill_ceiling(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -2744,7 +2748,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     dbc = DBC[CP.carFingerprint][Bus.pt]
     for change, eco_mode in product((None, 'at_target', 'more_decel', 'excess', 'stronger', 'gear', 'activity', 'stale_engine', 'stale_gear',
                                     'stale_VSA', 'invalid_CAN', 'pose', 'gas_pedal', 'brake_pedal', 'inactive', 'not_pid',
-                                    'low_speed', 'high_speed', 'no_offset', 'new_domain', 'bridge', 'received_brake', 'pressure', 'forecast'),
+                                    'low_speed', 'high_speed', 'no_offset', 'no_offset_at_floor', 'new_domain', 'bridge', 'received_brake',
+                                    'pressure', 'forecast'),
                                    (False, True)):
       with self.subTest(change=change, eco_mode=eco_mode):
         controller = CarController({Bus.pt: dbc}, CP)
@@ -2806,8 +2811,10 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
               state.vEgo = 7.9
             elif change == 'high_speed':
               state.vEgo = 35.1
-            elif change == 'no_offset':
+            elif change in ('no_offset', 'no_offset_at_floor'):
               controller.odyssey_gas_response.correction = 0.
+              if change == 'no_offset_at_floor':
+                control.orientationNED = [0., 0., 0.]
             elif change == 'new_domain':
               controller.odyssey_gas_selected = False
             elif change == 'bridge':
@@ -2830,7 +2837,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel if control.longActive else 0., delta=.01)
             self.assertAlmostEqual(output.accel, values['ACCEL_COMMAND'], delta=.01)
             self.assertEqual(values['BRAKE_REQUEST'], change == 'stronger')
-            if change in (None, 'at_target', 'more_decel', 'gear', 'activity'):
+            if change in (None, 'at_target', 'more_decel', 'gear', 'activity', 'no_offset'):
               self.assertGreater(values['GAS_COMMAND'], 0)
               if change in ('gear', 'activity'):
                 # Restart delayed history while retaining gas still needed by the live response.
@@ -2841,6 +2848,40 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
                 self.assertEqual(len(controller.odyssey_gas_response.requests), ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
             else:
               self.assertEqual(values['GAS_COMMAND'], -30000)
+
+  def test_calibrated_uphill_gas_does_not_require_a_learned_offset(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, pitch, achieved in product((False, True), (0., .08), (-.4, -.27, 0.)):
+      with self.subTest(econ=econ, pitch=pitch, achieved=achieved):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_gas_selected = True
+        controller.odyssey_pitch.x = pitch
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., pitch, 0.])
+        control.actuators.accel = -.27
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=20., aEgo=achieved, canValid=True, ecoMode=econ, ecoModeValid=True)
+        now = 2_000_000_000
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=0, odyssey_target_gear=6,
+                             odyssey_user_brake=0., odyssey_computer_braking=False,
+                             odyssey_engine_torque_ts_nanos=now, odyssey_target_gear_ts_nanos=now,
+                             odyssey_computer_braking_ts_nanos=now)
+        output, sends = controller.update(control.as_reader(), CS, now)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        parser.update([(now, [m for m in sends if m[0] == 0x1DF])])
+        values = parser.vl['ACC_CONTROL']
+        self.assertEqual(values['BRAKE_REQUEST'], 0)
+        self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
+        self.assertAlmostEqual(output.accel, values['ACCEL_COMMAND'], delta=.01)
+        self.assertFalse(controller.odyssey_coast_response.drag)
+        self.assertEqual(controller.odyssey_gas_response.correction, 0.)
+        if pitch > 0. and state.aEgo <= control.actuators.accel:
+          self.assertGreater(values['GAS_COMMAND'], 0)
+        else:
+          self.assertEqual(values['GAS_COMMAND'], -30000)
 
   def test_prior_coast_response_braking_cancels_gas_preactivation(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -3431,15 +3472,17 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
               output_parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
             self.assertEqual(output_parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], blocked == 'coast_shortfall' and request < .3)
 
-  def test_uphill_negative_gas_demand_delays_only_an_active_gas_release(self):
+  def test_grade_calibration_cannot_expand_unqualified_raw_gas_continuity(self):
     gas_accel = odyssey_grade_gas_accel(-0.23, 0.03)
-    self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True, gas_accel=gas_accel), (True, False))
+    self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True, gas_accel=gas_accel), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, gas_accel=gas_accel), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True, gas_accel=-0.23), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True,
                                               gas_accel=odyssey_grade_gas_accel(-0.23, 0.01)), (False, False))
     self.assertEqual(odyssey_command_domains(-0.23, 20.0, previous_gas=True,
-                                              gas_accel=odyssey_grade_gas_accel(-0.23, 0.07)), (True, False))
+                                              gas_accel=odyssey_grade_gas_accel(-0.23, 0.07)), (False, False))
+    self.assertEqual(odyssey_command_domains(-0.19, 20.0, previous_gas=True, gas_accel=-0.10), (True, False))
+    self.assertEqual(odyssey_command_domains(-0.19, 20.0, previous_gas=True, gas_accel=-0.23), (False, False))
 
   def test_road_brake_wire_preserves_request_across_grade_and_response(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)

@@ -22,7 +22,6 @@ ODYSSEY_GRADE_FILTER_TAU = 0.5
 ODYSSEY_GRADE_RAMP_ACCEL = 0.30
 ODYSSEY_GRADE_GAIN = 0.6
 ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
-ODYSSEY_ZERO_GAS_GRADE_GAIN = 0.25
 ODYSSEY_RESPONSE_ERROR_TAU = 0.3
 ODYSSEY_RESPONSE_DELAY_FRAMES = 25  # 0.5 s Bosch longitudinal delay at 50 Hz
 ODYSSEY_RESPONSE_MAX_COUNTS = 100.0
@@ -46,7 +45,7 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
     gas_selected |= (not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0 and
                      gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])
-    gas_selected |= previous_gas and gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
+    gas_selected |= previous_gas and min(accel, gas_accel) > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
       gas_selected = False
     brake_selected = not release_brake and (accel < ODYSSEY_ROAD_BRAKE_ENTRY or (previous_brake and accel < 0.0))
@@ -80,7 +79,7 @@ def odyssey_grade_gas_accel(accel, pitch):
   if grade < 0.0:
     # Gravity still supplies acceleration when the requested net acceleration is zero.
     return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade * ODYSSEY_GRADE_GAIN)
-  zero_grade = min(grade * ODYSSEY_ZERO_GAS_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
+  zero_grade = min(grade * ODYSSEY_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
   if zero_grade > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel <= 0.0:
     gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if accel <= gas_split:
@@ -616,13 +615,13 @@ class CarController(CarControllerBase):
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              (settled_coast or settled_brake))))
-            # The feedforward floor must not discard gas still supplied by qualified feedback.
-            # Drivetrain changes restart the observer, which retains needed gas through warmup.
+            # Below the raw gas split, calibrated gas needs qualified live response for continuity.
             response_gas |= (previous_gas and not self.odyssey_gas_bridge_active and
                             coast_eligible and coast_state_valid and not brake_feedback_active and
                             8.0 <= CS.out.vEgo <= 35.0 and accel < 0.0 and
                             (passive_accel is None or passive_accel < accel) and
-                            self.odyssey_gas_response.correction > 0.0 and
+                            (self.odyssey_gas_response.correction > 0.0 or
+                             gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0]) and
                             CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR)
             if response_gas:
               gas_selected, brake_selected = True, False
