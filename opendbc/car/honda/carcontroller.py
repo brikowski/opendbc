@@ -147,6 +147,7 @@ class OdysseyGasResponse:
     self.requests = deque(maxlen=ODYSSEY_RESPONSE_DELAY_FRAMES + 1)
     self.pitch_peak = None
     self.drivetrain = None
+    self.paused = False
     self.error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2, initialized=False)
 
   def reset(self):
@@ -156,16 +157,34 @@ class OdysseyGasResponse:
     self.integral = 0.0
     self.requests.clear()
     self.pitch_peak = None
+    self.paused = False
     self.error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2, initialized=False)
 
   def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, shift_activity=0,
-             limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS)):
-    if (not eligible or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, *limits)) or
+             limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS), coast=False):
+    if (not (eligible or coast) or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, *limits)) or
         not 1 <= gear <= 10):
       self.reset()
       return 0.0
 
     drivetrain = (gear, shift_activity)
+    if coast:
+      # Coast supplies no gas-response samples; retain only a valid learned gas reduction.
+      offset = self.integral
+      if drivetrain != self.drivetrain or offset >= 0.0:
+        self.reset()
+      else:
+        self.clear_observer()
+        self.integral = offset
+        self.paused = True
+      return 0.0
+    if self.paused:
+      if drivetrain != self.drivetrain:
+        self.reset()
+      else:
+        # This offset was not issued during coast; rebase it to the current gas headroom.
+        self.correction = float(np.clip(self.integral, *limits))
+        self.paused = False
     if drivetrain != self.drivetrain:
       self.clear_observer()
     elif self.pitch_peak is not None and pitch < self.pitch_peak - 0.01:
@@ -651,16 +670,18 @@ class CarController(CarControllerBase):
             self.odyssey_brake_selected = CC.longActive and brake_selected
             self.odyssey_gas_selected = gas_selected
             # Honda brake holds do not measure gas-only response.
-            feedback_eligible = (CC.longActive and gas_selected and previous_gas and
-                                 not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
-                                 actuators.longControlState == LongCtrlState.pid and
-                                 not CS.out.gasPressed and not CS.out.brakePressed and
-                                 coast_state_valid and not brake_feedback_active and
+            feedback_state_valid = (CC.longActive and not self.odyssey_gas_bridge_active and odyssey_pitch_valid and
+                                    actuators.longControlState == LongCtrlState.pid and
+                                    not CS.out.gasPressed and not CS.out.brakePressed and
+                                    coast_state_valid and math.isfinite(CS.odyssey_user_brake) and not brake_feedback_active)
+            feedback_eligible = (feedback_state_valid and gas_selected and
+                                 (previous_gas or (accel >= 0.0 and self.odyssey_gas_response.integral < 0.0)) and
                                  (gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] or response_gas))
             correction = self.odyssey_gas_response.update(accel, CS.out.aEgo, self.odyssey_pitch.x,
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
                                                             cap_weight, CS.odyssey_shift_activity,
-                                                            limits=(-self.gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas))
+                                                            limits=(-self.gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas),
+                                                            coast=feedback_state_valid and not gas_selected and not brake_selected)
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
             if CC.longActive and brake_selected and not CS.out.gasPressed and not CS.out.brakePressed:

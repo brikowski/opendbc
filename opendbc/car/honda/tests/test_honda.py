@@ -1174,6 +1174,129 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertEqual(response.update(.2, .1, pitch, 20., gear, False, shift_activity=activity), 0.)
         self.assertFalse(response.requests)
 
+  def test_coast_handoff_does_not_reintroduce_a_learned_gas_excess(self):
+    faults = (None, 'reverse_error', 'positive_offset', 'can', 'gas_pedal', 'brake_pedal', 'brake_feedback',
+              'pressure', 'invalid_pressure', 'invalid_response', 'gear', 'activity', 'mode', 'pose', 'inactive',
+              'stopping', 'gear_age', 'brake_age', 'brake_command', 'large_offset', 'resume_gear', 'resume_activity',
+              'resume_mode', 'bridge_entry')
+    for econ, fault in product((False, True), faults):
+      with self.subTest(econ=econ, fault=fault):
+        CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+        dbc = DBC[CP.carFingerprint][Bus.pt]
+        controller = CarController({Bus.pt: dbc}, CP)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=20., aEgo=-.1, canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS.odyssey_target_gear, CS.odyssey_shift_activity = 7, 119
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        controller.frame = 1
+        controller.update(control.as_reader(), CS, 1_010_000_000)
+        response = controller.odyssey_gas_response
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 50):
+          response.update(.1, -.1 if fault == 'positive_offset' else .3, 0., 20., 7, True,
+                          shift_activity=119, limits=(-300., 1700.))
+        offset = response.integral
+        if fault == 'large_offset':
+          response.integral = offset = -800.
+          response.correction = -850.
+        self.assertNotEqual(response.correction, offset)  # Coast must retain the offset, not the transient proportional term.
+        controller.odyssey_gas_selected = True
+        controller.gas = 200.
+        if fault == 'positive_offset':
+          CS.out.aEgo = 0.
+
+        def step(request, apply_fault=False, controller=controller, control=control, CS=CS, parser=parser,
+                 fault=fault, econ=econ):
+          control.actuators.accel = request
+          for _ in range(2):
+            now = 1_000_000_000 + controller.frame * 10_000_000
+            CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+            if apply_fault:
+              if fault == 'can':
+                CS.out.canValid = False
+              elif fault in ('gas_pedal', 'brake_pedal'):
+                setattr(CS.out, 'gasPressed' if fault == 'gas_pedal' else 'brakePressed', True)
+              elif fault == 'brake_feedback':
+                CS.odyssey_computer_braking = True
+              elif fault == 'pressure':
+                CS.odyssey_user_brake = .03125
+              elif fault == 'invalid_pressure':
+                CS.odyssey_user_brake = math.nan
+              elif fault == 'invalid_response':
+                CS.out.aEgo = math.nan
+              elif fault == 'gear':
+                CS.odyssey_target_gear = 8
+              elif fault == 'activity':
+                CS.odyssey_shift_activity = 126
+              elif fault == 'mode':
+                CS.out.ecoMode = not econ
+              elif fault == 'pose':
+                control.orientationNED = []
+              elif fault == 'inactive':
+                control.longActive = False
+              elif fault == 'stopping':
+                control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.stopping
+              elif fault in ('gear_age', 'brake_age'):
+                setattr(CS, 'odyssey_target_gear_ts_nanos' if fault == 'gear_age' else 'odyssey_computer_braking_ts_nanos', now - 60_000_000)
+            output, sends = controller.update(control.as_reader(), CS, now)
+            packets = [p for p in sends if p[0] == 0x1DF and p[2] == 1]
+            if packets:
+              parser.update([(now, packets)])
+          return output
+
+        for _ in range(1 if fault == 'positive_offset' else 30):
+          step(-.25)
+          self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertFalse(response.requests)
+          self.assertFalse(response.error.initialized)
+          self.assertEqual(response.integral, 0. if fault == 'positive_offset' else offset)
+        if fault not in (None, 'reverse_error', 'large_offset', 'resume_gear', 'resume_activity', 'resume_mode', 'bridge_entry'):
+          step(-.5 if fault == 'brake_command' else -.25, apply_fault=True)
+          self.assertEqual(response.integral, 0.)
+          self.assertEqual(response.correction, 0.)
+        else:
+          if fault == 'bridge_entry':
+            step(-.05)
+            self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], ODYSSEY_GAS_BRIDGE_COMMAND)
+            self.assertEqual(response.integral, 0.)
+            self.assertEqual(response.correction, 0.)
+            self.assertFalse(response.requests)
+            continue
+          CS.out.aEgo = -.1 if fault == 'reverse_error' else .1
+          if fault == 'large_offset':
+            CS.out.aEgo = -.1
+          elif fault == 'resume_gear':
+            CS.odyssey_target_gear = 8
+          elif fault == 'resume_activity':
+            CS.odyssey_shift_activity = 126
+          elif fault == 'resume_mode':
+            CS.out.ecoMode = not econ
+          request = .5 if fault == 'reverse_error' else .1
+          output = step(request)
+          base, _ = odyssey_gas_feedforward(request, request, 20., controller.params)
+          self.assertEqual(len(response.requests), 0 if fault == 'resume_mode' else 1)
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertAlmostEqual(output.accel, request)
+          self.assertAlmostEqual(output.gas, base + response.correction, delta=.0001)
+          if fault in ('resume_gear', 'resume_activity', 'resume_mode'):
+            self.assertEqual(response.correction, 0.)
+            self.assertEqual(response.integral, 0.)
+          elif fault is None:
+            self.assertEqual(response.correction, offset)
+            self.assertLess(parser.vl['ACC_CONTROL']['GAS_COMMAND'], base)
+          else:
+            self.assertGreater(response.correction, offset)
+            self.assertLessEqual(response.correction, 0.)
+          if fault == 'large_offset':
+            self.assertGreaterEqual(response.correction, -base)
+            self.assertGreater(parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0.)
+            for _ in range(math.ceil(base / ODYSSEY_RESPONSE_SLEW_COUNTS)):
+              output = step(request)
+            self.assertGreaterEqual(output.gas, base)
+
   def test_gas_response_corrects_residual_during_falling_grade(self):
     for achieved in (-.3, .3):
       with self.subTest(achieved=achieved):
