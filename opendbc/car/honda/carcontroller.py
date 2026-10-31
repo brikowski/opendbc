@@ -250,7 +250,7 @@ class OdysseyCoastResponse:
   """Return a prior passive estimate, or None if unlearned or currently ineligible."""
   def __init__(self):
     self.drag = {}
-    self.warmup = {}
+    self.samples = deque(maxlen=5)
     self.gear = None
     self.coast_start = None
 
@@ -273,14 +273,12 @@ class OdysseyCoastResponse:
       if self.coast_start is None:
         self.coast_start = frame
         # Median observations belong to one uninterrupted coast.
-        self.warmup.pop(gear, None)
+        self.samples.clear()
       # Acquire the first five settled samples promptly; retain the learned update cadence.
       if frame - self.coast_start >= 50 and (gear not in self.drag or frame % 10 == 0):
-        residual = aego - gravity
-        samples = self.warmup.setdefault(gear, deque(maxlen=5))
-        samples.append(residual)
-        if len(samples) == samples.maxlen:
-          self.drag[gear] = sorted(samples)[2]
+        self.samples.append(aego - gravity)
+        if len(self.samples) == self.samples.maxlen:
+          self.drag[gear] = sorted(self.samples)[2]
     return forecast
 
 

@@ -1660,27 +1660,24 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     response = OdysseyCoastResponse()
     for frame in range(0, 50, 2):
       self.assertIsNone(response.update(frame, 7, 0.0, 9.0, True, True))
-    self.assertFalse(response.warmup)
+    self.assertFalse(response.drag)
     for frame, accel in zip(range(50, 60, 2), [0.25, 0.24, 3.0, 0.26, 0.27], strict=True):
       self.assertIsNone(response.update(frame, 7, 0.0, accel, True, True))
     self.assertAlmostEqual(response.update(60, 7, 0.0, 0.28, True, True), 0.26)
-    self.assertEqual(len(response.warmup[7]), 5)
     for frame in range(62, 80, 2):
       self.assertAlmostEqual(response.update(frame, 7, 0.0, 0.26 if frame == 70 else 9.0, True, True), 0.27)
     self.assertAlmostEqual(response.update(80, 7, 0.0, 0.25, True, True), 0.27)
     self.assertAlmostEqual(response.update(82, 7, 0.0, -3.0, False, True), 0.26)
-    samples = list(response.warmup[7])
+    drag = response.drag.copy()
     self.assertAlmostEqual(response.update(90, 7, 0.0, -3.0, False, True), 0.26)
-    self.assertEqual(list(response.warmup[7]), samples)
+    self.assertEqual(response.drag, drag)
     for frame in range(92, 140, 2):
       self.assertIsNone(response.update(frame, 8, 0.0, 0.0, True, True))
     # A known gear keeps its prior forecast while new coast observations settle.
     for frame in range(140, 190, 2):
       self.assertAlmostEqual(response.update(frame, 7, 0.0, 9.0, True, True), 0.26)
-    self.assertNotIn(7, response.warmup)
     self.assertIsNone(response.update(190, 7, 0.0, 0.0, False, False))
     self.assertFalse(response.drag)
-    self.assertFalse(response.warmup)
 
   def test_nonnegative_brake_hold_does_not_learn_its_response_as_coast(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -1885,7 +1882,7 @@ from opendbc.car.honda.carcontroller import OdysseyCoastResponse
 response = OdysseyCoastResponse()
 for frame in range(0, 58, 2):
   response.update(frame, 7, 0.0, -0.2, True, True)
-assert len(response.warmup[7]) == 4
+assert not response.drag
 loaded = set(sys.modules)
 assert response.update(58, 7, 0.0, -0.2, True, True) is None
 assert not set(sys.modules) - loaded, sorted(set(sys.modules) - loaded)
@@ -1911,7 +1908,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         response = OdysseyCoastResponse()
         for frame in range(0, 56, 2):
           self.assertIsNone(response.update(frame, 7, 0., -.4, True, True))
-        self.assertEqual(len(response.warmup[7]), 3)
+        self.assertNotIn(7, response.drag)
         response.update(56, 8 if interruption == 'gear' else 7, 0., -.4,
                         interruption != 'controlled', interruption != 'invalid')
         for frame in range(3600, 3660, 2):
@@ -2584,7 +2581,6 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           values = parser.vl['ACC_CONTROL']
           self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel if control.longActive else 0., delta=.01)
           self.assertEqual(controller.odyssey_coast_response.drag[7], drag)
-          self.assertFalse(controller.odyssey_coast_response.warmup)
           if released and change is None:
             self.assertGreaterEqual(values['GAS_COMMAND'], 0)
             self.assertEqual(values['BRAKE_REQUEST'], 0)
@@ -3370,7 +3366,6 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
       self.assertAlmostEqual(values['ACCEL_COMMAND'], request, delta=.01)
       self.assertAlmostEqual(output.accel, request, delta=.00001)
       self.assertEqual(controller.odyssey_coast_response.drag[7], drag)
-      self.assertFalse(controller.odyssey_coast_response.warmup)
 
   def test_brake_release_does_not_reverse_on_a_small_forecast_shortfall_while_overbraking(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -3414,7 +3409,6 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           self.assertAlmostEqual(values['ACCEL_COMMAND'], request, delta=.01)
           self.assertAlmostEqual(output.accel, request, delta=.00001)
           self.assertEqual(controller.odyssey_coast_response.drag[6], drag)
-          self.assertFalse(controller.odyssey_coast_response.warmup)
 
   def test_settled_excess_braking_can_release_to_a_close_coast_forecast(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
@@ -3455,7 +3449,6 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           self.assertAlmostEqual(output.accel, -.2, delta=1e-5)
         self.assertTrue(released)
         self.assertEqual(controller.odyssey_coast_response.drag[6], -.15)
-        self.assertFalse(controller.odyssey_coast_response.warmup)
         control.actuators.accel = -.35
         for _ in range(2):
           now = 2_000_000_000 + controller.frame * 10_000_000
@@ -3577,7 +3570,6 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertEqual(values['GAS_COMMAND'], -30000)
         self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
         self.assertAlmostEqual(output.accel, control.actuators.accel, delta=.00001)
-        self.assertFalse(controller.odyssey_coast_response.warmup)
 
   def test_brake_release_requires_coast_to_supply_requested_deceleration(self):
     for coast_error in (None, -.01, 0., .001, .1, .19):
