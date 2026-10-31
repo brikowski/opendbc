@@ -214,6 +214,9 @@ class OdysseyGasResponse:
       if lower <= target <= upper or (target > upper and residual < 0.0) or (target < lower and residual > 0.0):
         self.integral = integral
       target = float(np.clip(proportional + self.integral, lower, upper))
+      if target > 0.0 and residual < -ODYSSEY_COAST_RELEASE_ERROR:
+        # Withdraw added gas on qualified excess without discarding the learned offset.
+        target = min(target, max(0.0, self.correction + proportional))
     else:
       # Observed excess acceleration can reduce gas before the delayed observer is ready.
       proportional = float(np.clip(ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * min(request - aego, 0.0), lower, 0.0))

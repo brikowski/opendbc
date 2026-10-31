@@ -275,6 +275,62 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertFalse(controller.odyssey_gas_response.error.initialized)
         self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], .2, delta=.01)
 
+  def test_added_gas_withdraws_when_settled_response_exceeds_request(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, gear_change in product((False, True), repeat=2):
+      with self.subTest(econ=econ, gear_change=gear_change):
+        controller = CarController({Bus.pt: dbc}, CP)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=25., aEgo=0., canValid=True, ecoModeValid=True, ecoMode=econ)
+        CS.odyssey_target_gear, CS.odyssey_shift_activity = 7, 119
+        CS.odyssey_car_gas, CS.odyssey_user_brake = 1., 0.
+        CS.odyssey_computer_braking = False
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., .05, 0.])
+        control.actuators.accel = .8
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+
+        def step(controller=controller, CS=CS, control=control, parser=parser):
+          now = 1_000_000_000 + controller.frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, sends)])
+
+        for _ in range(300):
+          step()
+        self.assertGreater(controller.odyssey_gas_response.correction, 300.)
+        control.actuators.accel, CS.out.aEgo = .2, .6
+        if gear_change:
+          CS.odyssey_target_gear, CS.odyssey_shift_activity = 6, 102
+        previous = controller.odyssey_gas_response.correction
+        for _ in range(200):
+          step()
+          correction = controller.odyssey_gas_response.correction
+          self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS + 1e-9)
+          previous = correction
+          self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], .2, delta=.01)
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+        self.assertLessEqual(controller.odyssey_gas_response.correction, 0.)
+
+  def test_gas_response_keeps_calibration_through_small_measurement_noise(self):
+    request, noise = .4, .05
+    for direction in (-1., 1.):
+      with self.subTest(direction=direction):
+        response = OdysseyGasResponse()
+        for _ in range(300):
+          response.update(request, request - direction * .2, 0., 25., 7, True, limits=(-500., 1500.))
+        for _ in range(100):
+          response.update(request, request, 0., 25., 7, True, limits=(-500., 1500.))
+        offset = response.correction
+        self.assertGreater(direction * offset, 100.)
+        observed = []
+        for frame in range(500):
+          aego = request + noise * math.sin(2 * math.pi * frame / 50.)
+          observed.append(response.update(request, aego, 0., 25., 7, True, limits=(-500., 1500.)))
+        self.assertAlmostEqual(sum(observed[-200:]) / 200., offset, delta=ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * noise)
+
   def test_gas_entry_waits_for_received_brake_release(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
@@ -872,27 +928,25 @@ class TestOdysseyLongitudinal(unittest.TestCase):
 
   def test_gas_response_converges_after_request_change_with_available_headroom(self):
     # Illustrative delayed plant: a convergence regression, not an identified Honda gas gain.
-    for gain in (.001, .003):
-      for bias in (-.3, -.06, .06, .3):
-        for cap in (0., 1.):
-          with self.subTest(gain=gain, bias=bias, cap=cap):
-            response = OdysseyGasResponse()
-            delay = deque([.2 + bias] * 36)
-            achieved = .2 + bias
-            previous_command = .2
-            errors = []
-            for frame in range(2000):
-              request = .2 if frame < 1000 else .1
-              correction = response.update(request, achieved, 0., 20., 6, True, cap_weight=cap, limits=(-600., 600.))
-              command = request + gain * correction
-              if frame == 1000:
-                self.assertLess(command, previous_command)
-              previous_command = command
-              delay.append(command + bias)
-              achieved += (delay.popleft() - achieved) * DT_CTRL * 2 / (.15 + DT_CTRL * 2)
-              if frame >= 1900:
-                errors.append(abs(request - achieved))
-            self.assertLess(sum(errors) / len(errors), .003)
+    for initial_request, gain, bias, cap in product((.2, .8), (.001, .003), (-.3, -.06, .06, .3), (0., 1.)):
+      with self.subTest(initial_request=initial_request, gain=gain, bias=bias, cap=cap):
+        response = OdysseyGasResponse()
+        delay = deque([initial_request + bias] * 36)
+        achieved = initial_request + bias
+        previous_command = initial_request
+        errors = []
+        for frame in range(2000):
+          request = initial_request if frame < 1000 else .1
+          correction = response.update(request, achieved, 0., 20., 6, True, cap_weight=cap, limits=(-600., 600.))
+          command = request + gain * correction
+          if frame == 1000:
+            self.assertLess(command, previous_command)
+          previous_command = command
+          delay.append(command + bias)
+          achieved += (delay.popleft() - achieved) * DT_CTRL * 2 / (.15 + DT_CTRL * 2)
+          if frame >= 1900:
+            errors.append(abs(request - achieved))
+        self.assertLess(sum(errors) / len(errors), .003)
 
   def test_gas_response_retained_reduction_follows_available_headroom(self):
     response = OdysseyGasResponse()
