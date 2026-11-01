@@ -258,11 +258,11 @@ class OdysseyCoastResponse:
     self.__init__()
 
   def update(self, frame, gear, pitch, aego, coast, eligible):
-    if not 1 <= gear <= 10 or not all(math.isfinite(v) for v in (pitch, aego)):
+    if not all(math.isfinite(v) for v in (gear, pitch, aego)):
       self.reset()
       return None
-    if not eligible:
-      # Unqualified motion ends sampling without discarding completed calibration.
+    if not eligible or not 1 <= gear <= 10:
+      # Idle stop pauses forward-gear observations; keep completed calibration.
       self.gear = None
       self.coast_start = None
       self.samples.clear()

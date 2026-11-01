@@ -1685,6 +1685,20 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertIsNone(response.gear)
     self.assertAlmostEqual(response.update(194, 7, 0.0, -3.0, False, True), 0.26)
     self.assertIsNone(response.update(196, 8, 0.0, -3.0, False, True))
+    for gear in (0, 13):
+      self.assertIsNone(response.update(198, gear, 0.0, -3.0, True, True))
+      self.assertEqual(response.drag, drag)
+      self.assertFalse(response.samples)
+      self.assertIsNone(response.coast_start)
+      self.assertIsNone(response.gear)
+      self.assertAlmostEqual(response.update(200, 7, 0.0, -3.0, False, True), 0.26)
+    for index in range(3):
+      for invalid in (math.nan, math.inf):
+        values = [7, 0.0, 0.0]
+        values[index] = invalid
+        response.drag = drag.copy()
+        self.assertIsNone(response.update(202, *values, True, True))
+        self.assertFalse(response.drag)
     response.reset()
     self.assertFalse(response.drag)
 
@@ -2337,7 +2351,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
 
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for blocked in (None, 'interrupted_gas', 'interrupted_brake', 'gas_pedal', 'brake_pedal', 'received_gas', 'computer_brake', 'pressure', 'missing_pressure',
+    for blocked in (None, 'interrupted_gas', 'interrupted_brake', 'idle_stop', 'gas_pedal', 'brake_pedal',
+                    'received_gas', 'computer_brake', 'pressure', 'missing_pressure',
                     'stale_gas', 'stale_gear', 'stale_brake', 'invalid_can', 'invalid_pose', 'invalid_gear',
                     'low_speed', 'high_speed', 'unsettled', 'active_non_pid'):
       with self.subTest(blocked=blocked):
@@ -2372,12 +2387,16 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertEqual(signals['BRAKE_REQUEST'], 0)
             self.assertEqual(signals['GAS_COMMAND'], -30000)
             self.assertEqual(signals['ACCEL_COMMAND'], 0)
-        learned = blocked in (None, 'interrupted_gas', 'interrupted_brake')
+        learned = blocked in (None, 'interrupted_gas', 'interrupted_brake', 'idle_stop')
         self.assertEqual(bool(controller.odyssey_coast_response.drag), learned)
-        if blocked in ('interrupted_gas', 'interrupted_brake'):
+        if blocked in ('interrupted_gas', 'interrupted_brake', 'idle_stop'):
           prior = controller.odyssey_coast_response.drag.copy()
           CS.out.gasPressed = blocked == 'interrupted_gas'
-          CS.out.brakePressed = blocked == 'interrupted_brake'
+          CS.out.brakePressed = blocked in ('interrupted_brake', 'idle_stop')
+          if blocked == 'idle_stop':
+            CS.out.vEgo = CS.out.aEgo = 0.
+            CS.odyssey_target_gear = 0
+            CS.odyssey_user_brake = .5
           step()
           step()
           self.assertEqual(controller.odyssey_coast_response.drag, prior)
