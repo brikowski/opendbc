@@ -1656,7 +1656,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
         self.assertGreater(parser.vl['ACC_CONTROL']['GAS_COMMAND'], 0)
 
-  def test_passive_coast_forecast_is_prior_only_and_resets_on_ineligible_state(self):
+  def test_passive_coast_forecast_preserves_calibration_and_discards_ineligible_samples(self):
     response = OdysseyCoastResponse()
     for frame in range(0, 50, 2):
       self.assertIsNone(response.update(frame, 7, 0.0, 9.0, True, True))
@@ -1676,7 +1676,16 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     # A known gear keeps its prior forecast while new coast observations settle.
     for frame in range(140, 190, 2):
       self.assertAlmostEqual(response.update(frame, 7, 0.0, 9.0, True, True), 0.26)
-    self.assertIsNone(response.update(190, 7, 0.0, 0.0, False, False))
+    self.assertAlmostEqual(response.update(190, 7, 0.0, 9.0, True, True), 0.26)
+    self.assertTrue(response.samples)
+    self.assertIsNone(response.update(192, 7, 0.0, 0.0, False, False))
+    self.assertEqual(response.drag, drag)
+    self.assertFalse(response.samples)
+    self.assertIsNone(response.coast_start)
+    self.assertIsNone(response.gear)
+    self.assertAlmostEqual(response.update(194, 7, 0.0, -3.0, False, True), 0.26)
+    self.assertIsNone(response.update(196, 8, 0.0, -3.0, False, True))
+    response.reset()
     self.assertFalse(response.drag)
 
   def test_nonnegative_brake_hold_does_not_learn_its_response_as_coast(self):
@@ -2328,7 +2337,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
 
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
-    for blocked in (None, 'gas_pedal', 'brake_pedal', 'received_gas', 'computer_brake', 'pressure', 'missing_pressure',
+    for blocked in (None, 'interrupted_gas', 'interrupted_brake', 'gas_pedal', 'brake_pedal', 'received_gas', 'computer_brake', 'pressure', 'missing_pressure',
                     'stale_gas', 'stale_gear', 'stale_brake', 'invalid_can', 'invalid_pose', 'invalid_gear',
                     'low_speed', 'high_speed', 'unsettled', 'active_non_pid'):
       with self.subTest(blocked=blocked):
@@ -2363,7 +2372,17 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertEqual(signals['BRAKE_REQUEST'], 0)
             self.assertEqual(signals['GAS_COMMAND'], -30000)
             self.assertEqual(signals['ACCEL_COMMAND'], 0)
-        self.assertEqual(bool(controller.odyssey_coast_response.drag), blocked is None)
+        learned = blocked in (None, 'interrupted_gas', 'interrupted_brake')
+        self.assertEqual(bool(controller.odyssey_coast_response.drag), learned)
+        if blocked in ('interrupted_gas', 'interrupted_brake'):
+          prior = controller.odyssey_coast_response.drag.copy()
+          CS.out.gasPressed = blocked == 'interrupted_gas'
+          CS.out.brakePressed = blocked == 'interrupted_brake'
+          step()
+          step()
+          self.assertEqual(controller.odyssey_coast_response.drag, prior)
+          self.assertFalse(controller.odyssey_coast_response.samples)
+          self.assertIsNone(controller.odyssey_coast_response.coast_start)
         control.longActive = True
         control.orientationNED = [0., -.02, 0.]
         control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
@@ -2376,10 +2395,10 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         output, messages = step()
         self.assertEqual(len(messages), 1)
         signals = parser.vl['ACC_CONTROL']
-        self.assertEqual(signals['BRAKE_REQUEST'], blocked is None)
+        self.assertEqual(signals['BRAKE_REQUEST'], learned)
         self.assertAlmostEqual(signals['ACCEL_COMMAND'], -.1, delta=.01)
         self.assertAlmostEqual(output.accel, -.1, delta=.01)
-        if blocked is None:
+        if learned:
           self.assertEqual(signals['GAS_COMMAND'], -30000)
           safety = libsafety_py.libsafety
           config = CP.safetyConfigs[-1]

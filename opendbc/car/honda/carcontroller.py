@@ -258,8 +258,14 @@ class OdysseyCoastResponse:
     self.__init__()
 
   def update(self, frame, gear, pitch, aego, coast, eligible):
-    if not eligible or not 1 <= gear <= 10 or not all(math.isfinite(v) for v in (pitch, aego)):
+    if not 1 <= gear <= 10 or not all(math.isfinite(v) for v in (pitch, aego)):
       self.reset()
+      return None
+    if not eligible:
+      # Unqualified motion ends sampling without discarding completed calibration.
+      self.gear = None
+      self.coast_start = None
+      self.samples.clear()
       return None
     if gear != self.gear:
       self.gear = gear
@@ -566,16 +572,19 @@ class CarController(CarControllerBase):
             settled_brake = ((self.odyssey_brake_selected or self.odyssey_coast_response.gear == CS.odyssey_target_gear) and
                              self.odyssey_brake_start_frame is not None and
                              self.frame - self.odyssey_brake_start_frame >= 2 * ODYSSEY_RESPONSE_DELAY_FRAMES)
-            coast_observation_eligible = (not CS.out.gasPressed and not CS.out.brakePressed and odyssey_pitch_valid and
-                                          0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
-            coast_eligible = CC.longActive and actuators.longControlState == LongCtrlState.pid and coast_observation_eligible
-            manual_coast_eligible = (not CC.longActive and 8.0 <= CS.out.vEgo <= 35.0 and
-                                     abs(CS.odyssey_user_brake) <= 0.015625 and coast_observation_eligible)
             gear_state_valid = (CS.out.canValid and CS.odyssey_target_gear_ts_nanos > 0 and
                                 0 <= now_nanos - CS.odyssey_target_gear_ts_nanos < 60_000_000)
             coast_state_valid = (gear_state_valid and
                                  CS.odyssey_computer_braking_ts_nanos > 0 and
                                  0 <= now_nanos - CS.odyssey_computer_braking_ts_nanos < 60_000_000)
+            coast_inputs_valid = (coast_state_valid and odyssey_pitch_valid and
+                                  0 <= now_nanos - CS.odyssey_engine_torque_ts_nanos < 60_000_000)
+            coast_observation_eligible = not CS.out.gasPressed and not CS.out.brakePressed and coast_inputs_valid
+            coast_eligible = CC.longActive and actuators.longControlState == LongCtrlState.pid and coast_observation_eligible
+            manual_coast_eligible = (not CC.longActive and 8.0 <= CS.out.vEgo <= 35.0 and
+                                     abs(CS.odyssey_user_brake) <= 0.015625 and coast_observation_eligible)
+            if not coast_inputs_valid:
+              self.odyssey_coast_response.reset()
             # Brake feedback can remain active when the computer-braking indication drops.
             brake_feedback_active = (CS.odyssey_computer_braking or
                                      (math.isfinite(CS.odyssey_user_brake) and CS.odyssey_user_brake > 0.015625))
