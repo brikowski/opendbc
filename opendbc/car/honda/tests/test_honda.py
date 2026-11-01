@@ -5,6 +5,7 @@ import unittest
 from collections import deque
 from itertools import product
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from opendbc.can import CANPacker
 from opendbc.can.parser import CANParser
@@ -32,6 +33,27 @@ class TestHondaFingerprint(unittest.TestCase):
     for car_model in CAR:
       if car_model.config.flags & HondaFlags.BOSCH_TJA_CONTROL:
         assert car_model.config.flags & HondaFlags.BOSCH, "Nidec car found with TJA control"
+
+
+class TestHondaControllerParams(unittest.TestCase):
+  def test_odyssey_gas_map_is_independent_of_other_honda_configuration(self):
+    CP = structs.CarParams(carFingerprint=CAR.HONDA_ODYSSEY_5G_MMR)
+    params = CarControllerParams(CP)
+    for gas_max in (750, 1600):
+      with self.subTest(gas_max=gas_max), patch.object(CarControllerParams, 'BOSCH_GAS_LOOKUP_V', [0, gas_max]):
+        self.assertEqual(params.BOSCH_GAS_LOOKUP_V, [0, 2000])
+        self.assertEqual(CarControllerParams(CP).BOSCH_GAS_LOOKUP_V, [0, 2000])
+
+  def test_odyssey_interface_preserves_other_honda_gas_maps(self):
+    other_CP = structs.CarParams(carFingerprint=CAR.HONDA_CIVIC_BOSCH)
+    for experimental_long in (False, True):
+      with self.subTest(experimental_long=experimental_long), patch.object(CarControllerParams, 'BOSCH_GAS_LOOKUP_V', [0, 1600]):
+        other = CarControllerParams(other_CP)
+        CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], experimental_long, False, False)
+        controller = CarController({Bus.pt: DBC[CP.carFingerprint][Bus.pt]}, CP)
+        self.assertEqual(controller.params.BOSCH_GAS_LOOKUP_V, [0, 2000])
+        self.assertEqual(other.BOSCH_GAS_LOOKUP_V, [0, 1600])
+        self.assertEqual(CarControllerParams.BOSCH_GAS_LOOKUP_V, [0, 1600])
 
 
 class TestOdysseySpeed(unittest.TestCase):
@@ -467,9 +489,9 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           self.assertAlmostEqual(invalid['ACCEL_COMMAND'], request, delta=0.01)
           self.assertEqual(invalid['BRAKE_REQUEST'], request < 0.0)
           if request > 0.0:
-            raw_gas = float((request - CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]) /
-                            (CarControllerParams.BOSCH_GAS_LOOKUP_BP[-1] - CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]) *
-                            CarControllerParams.BOSCH_GAS_LOOKUP_V[-1])
+            raw_gas = float((request - controller.params.BOSCH_GAS_LOOKUP_BP[0]) /
+                            (controller.params.BOSCH_GAS_LOOKUP_BP[-1] - controller.params.BOSCH_GAS_LOOKUP_BP[0]) *
+                            controller.params.BOSCH_GAS_LOOKUP_V[-1])
             self.assertAlmostEqual(invalid['GAS_COMMAND'], odyssey_low_speed_gas_command(raw_gas, request, state.vEgo), delta=1)
           restored = step(0.04)
           self.assertTrue(math.isfinite(controller.odyssey_pitch.x))

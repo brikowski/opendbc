@@ -58,6 +58,7 @@ class CarControllerParams:
       self.STEER_MAX = 3628
     elif CP.carFingerprint == CAR.HONDA_ODYSSEY_5G_MMR:
       self.STEER_MAX = 3840
+      self.BOSCH_GAS_LOOKUP_V = [0, 2000]
       # Preserve the stock slew in CAN counts as the normalized range expands.
       self.STEER_DELTA_UP = 2
       self.STEER_DELTA_DOWN = 2

@@ -169,7 +169,6 @@ class CarInterface(CarInterfaceBase):
       ret.lateralTuning.torque.latAccelFactor *= steer_scale
       ret.lateralTuning.torque.friction /= steer_scale
       ret.steerActuatorDelay = 0.15
-      CarControllerParams.BOSCH_GAS_LOOKUP_V = [0, 2000]
       if not ret.openpilotLongitudinalControl:
         # When using stock ACC, the radar intercepts and filters steering commands the EPS would otherwise accept
         ret.minSteerSpeed = 70. * CV.KPH_TO_MS
