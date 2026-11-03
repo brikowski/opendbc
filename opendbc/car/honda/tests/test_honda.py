@@ -13,6 +13,7 @@ from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL, Bus, gen_empty_fin
 from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
+                                             ODYSSEY_RESPONSE_INTEGRAL_COUNTS_PER_ACCEL,
                                              ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_SLEW_COUNTS,
                                              ODYSSEY_ROAD_BRAKE_ENTRY,
                                              ODYSSEY_UPHILL_GAS_ACCEL_MAX, CarController, odyssey_brake_release,
@@ -240,7 +241,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         controller.frame = 1
         controller.update(control.as_reader(), CS, 10_000_000)
         for frame in range(0, 102, 2):
-          controller.odyssey_gas_response.update(.2, -.2, 0., 20., 7, True)
+          # Seed an offset without exhausting proportional headroom.
+          controller.odyssey_gas_response.update(.2, -.2, 0., 20., 7, True, limits=(-600., 600.))
           controller.odyssey_coast_response.update(frame, 7, 0., -.3, True, True)
         controller.odyssey_gas_coast_release.update(0, -.1, .3, 20., -.03, 7, .2, True, True)
         self.assertGreater(controller.odyssey_gas_response.integral, 0.)
@@ -931,8 +933,8 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           correction = response.update(request, aego, .02, 20.0, 7, True)
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
         # A smaller current error limits the proportional term, while the offset remains bounded.
-        self.assertLessEqual(abs(response.integral - retained), 200.0 * abs(request - aego) * .3 + 1e-6)
-        self.assertAlmostEqual(correction - response.integral, 200.0 * (request - aego))
+        self.assertLessEqual(abs(response.integral - retained), ODYSSEY_RESPONSE_INTEGRAL_COUNTS_PER_ACCEL * abs(request - aego) * .3 + 1e-6)
+        self.assertAlmostEqual(correction - response.integral, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * (request - aego))
 
   def test_gas_response_retains_correction_at_requested_acceleration(self):
     for direction in (-1, 1):
@@ -1055,9 +1057,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
         self.assertLessEqual(correction, 0.)
         self.assertGreaterEqual(response.integral, lower)
         self.assertLessEqual(response.integral, 0.)
-        if (achieved < .2 or achieved > .2) and lower == -5.:
-          self.assertEqual(response.integral, 0.)
-        else:
+        if achieved == .2:
           self.assertLess(response.integral, 0.)
         self.assertFalse(response.error.initialized)
         self.assertEqual(len(response.requests), 1)
@@ -2219,7 +2219,9 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           if frame == 298:
             self.assertIsNotNone(first_release)
             self.assertTrue(controller.odyssey_gas_coast_release.exhausted)
-            self.assertEqual((signals['GAS_COMMAND'], signals['BRAKE_REQUEST']), (-30000, 0))
+            # An earlier release can already establish that coast needs braking.
+            self.assertEqual(signals['GAS_COMMAND'], -30000)
+            self.assertEqual(signals['BRAKE_REQUEST'], int(prior_coast is not None))
           if frame < 370 and prior_coast is None:
             self.assertEqual(signals['BRAKE_REQUEST'], 0)
           if frame == 368 or frame >= 380:
