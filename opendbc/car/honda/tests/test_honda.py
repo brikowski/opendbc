@@ -3029,6 +3029,72 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
             self.assertEqual(values['BRAKE_REQUEST'], control.longActive and
                              (control.actuators.accel < ODYSSEY_ROAD_BRAKE_ENTRY or blocked == 'low_speed'))
 
+  def test_calibrated_gas_is_not_dropped_by_a_transient_excess(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, change in product((False, True), (None, 'warmup', 'gear', 'positive_error', 'zero_error', 'excess', 'stronger', 'forecast',
+                                              'offset_at_floor', 'coast_release')):
+      with self.subTest(econ=econ, change=change):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_gas_selected = True
+        controller.frame = 100
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., .08, 0.])
+        control.actuators.accel = -.1
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=20., aEgo=0., canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=0, odyssey_target_gear=5,
+                             odyssey_user_brake=0., odyssey_computer_braking=False)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+
+        def step(controller=controller, CS=CS, control=control, parser=parser):
+          now = 2_000_000_000 + controller.frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          return dict(parser.vl['ACC_CONTROL'])
+
+        for _ in range(60):
+          step()
+        self.assertTrue(controller.odyssey_gas_response.error.initialized)
+        self.assertLess(controller.odyssey_gas_response.error.x, 0.)
+        self.assertFalse(controller.odyssey_coast_response.drag)
+        control.actuators.accel = -.21
+        if change == 'warmup':
+          controller.odyssey_gas_response.clear_observer()
+        elif change == 'gear':
+          CS.odyssey_target_gear = 6
+        elif change == 'positive_error':
+          controller.odyssey_gas_response.error.x = .1
+        elif change == 'zero_error':
+          controller.odyssey_gas_response.error.x = 0.
+        elif change == 'excess':
+          controller.odyssey_gas_response.error.x = -.4
+        elif change == 'stronger':
+          control.actuators.accel = -.8
+        elif change == 'forecast':
+          controller.odyssey_coast_response.drag[5] = -.05 + ACCELERATION_DUE_TO_GRAVITY * math.sin(.08)
+        elif change == 'offset_at_floor':
+          control.orientationNED = [0., 0., 0.]
+          controller.odyssey_gas_response.correction = controller.odyssey_gas_response.integral = 50.
+        elif change == 'coast_release':
+          controller.odyssey_gas_coast_release.gear = 5
+          controller.odyssey_gas_coast_release.active = controller.odyssey_gas_coast_release.exhausted = True
+        values = step()
+        self.assertAlmostEqual(values['ACCEL_COMMAND'], control.actuators.accel, delta=.01)
+        self.assertEqual(values['BRAKE_REQUEST'], change == 'stronger')
+        if change is None:
+          self.assertGreater(values['GAS_COMMAND'], 0)
+          # Stronger deceleration still restores braking on the next command.
+          control.actuators.accel = -.8
+          step()
+          values = step()
+          self.assertEqual(values['GAS_COMMAND'], -30000)
+          self.assertEqual(values['BRAKE_REQUEST'], 1)
+        else:
+          self.assertEqual(values['GAS_COMMAND'], -30000)
+
   def test_mild_request_does_not_drop_needed_gas(self):
     from opendbc.safety.tests.libsafety import libsafety_py
 

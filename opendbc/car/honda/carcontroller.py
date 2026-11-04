@@ -599,8 +599,9 @@ class CarController(CarControllerBase):
                                     (settled_brake and accel < 0.0)) and abs(CS.odyssey_user_brake) <= 0.015625 and
               CS.odyssey_car_gas == 0.0 and
               not CS.odyssey_computer_braking, (coast_eligible or manual_coast_eligible) and coast_state_valid)
-            response_excess = (self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
-                               self.odyssey_gas_response.error.x < -ODYSSEY_COAST_RELEASE_ERROR)
+            response_ready = (self.odyssey_gas_response.drivetrain == (CS.odyssey_target_gear, CS.odyssey_shift_activity) and
+                              self.odyssey_gas_response.error.initialized)
+            response_excess = response_ready and self.odyssey_gas_response.error.x < -ODYSSEY_COAST_RELEASE_ERROR
             # GAS_COMMAND has one-count resolution and the CAN packer rounds half up.
             release_gas = self.odyssey_gas_coast_release.update(
               now_nanos, accel, CS.out.aEgo, CS.out.vEgo, self.odyssey_pitch.x,
@@ -646,14 +647,16 @@ class CarController(CarControllerBase):
                             (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
                              (settled_coast or settled_brake))))
-            # Below the raw gas split, calibrated gas needs qualified live response for continuity.
+            # Mature negative feedback can handle transient excess without discarding calibrated gas.
             response_gas |= (previous_gas and not self.odyssey_gas_bridge_active and
                             coast_eligible and coast_state_valid and not brake_feedback_active and
                             ODYSSEY_LOW_SPEED_DOMAIN_VEGO <= CS.out.vEgo <= 35.0 and accel < 0.0 and
                             (passive_accel is None or passive_accel < accel) and
                             (self.odyssey_gas_response.correction > 0.0 or
                              gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0]) and
-                            CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR)
+                            (CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR or
+                             (response_ready and not release_gas and gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and
+                              -ODYSSEY_COAST_RELEASE_ERROR <= self.odyssey_gas_response.error.x < 0.0)))
             if response_gas:
               gas_selected, brake_selected = True, False
               self.odyssey_gas_bridge_active = False
