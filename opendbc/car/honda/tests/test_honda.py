@@ -13,7 +13,6 @@ from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, DT_CTRL, Bus, gen_empty_fin
 from opendbc.car.honda.carcontroller import (ODYSSEY_GAS_BRIDGE_COMMAND, ODYSSEY_GRADE_GAIN,
                                              ODYSSEY_GRADE_RAMP_ACCEL, ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS,
                                              ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL,
-                                             ODYSSEY_RESPONSE_INTEGRAL_COUNTS_PER_ACCEL,
                                              ODYSSEY_RESPONSE_DELAY_FRAMES, ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_SLEW_COUNTS,
                                              ODYSSEY_ROAD_BRAKE_ENTRY,
                                              ODYSSEY_UPHILL_GAS_ACCEL_MAX, CarController, odyssey_brake_release,
@@ -933,7 +932,7 @@ class TestOdysseyLongitudinal(unittest.TestCase):
           correction = response.update(request, aego, .02, 20.0, 7, True)
           self.assertLessEqual(abs(correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
         # A smaller current error limits the proportional term, while the offset remains bounded.
-        self.assertLessEqual(abs(response.integral - retained), ODYSSEY_RESPONSE_INTEGRAL_COUNTS_PER_ACCEL * abs(request - aego) * .3 + 1e-6)
+        self.assertLessEqual(abs(response.integral - retained), ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * abs(request - aego) * .3 + 1e-6)
         self.assertAlmostEqual(correction - response.integral, ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * (request - aego))
 
   def test_gas_response_retains_correction_at_requested_acceleration(self):

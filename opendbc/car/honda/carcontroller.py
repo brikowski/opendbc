@@ -25,9 +25,7 @@ ODYSSEY_UPHILL_GAS_ACCEL_MAX = 1.0
 ODYSSEY_RESPONSE_ERROR_TAU = 0.3
 ODYSSEY_RESPONSE_DELAY_FRAMES = 25  # 0.5 s Bosch longitudinal delay at 50 Hz
 ODYSSEY_RESPONSE_MAX_COUNTS = 100.0
-# Separate immediate correction from offset adaptation.
-ODYSSEY_RESPONSE_COUNTS_PER_ACCEL = 300.0
-ODYSSEY_RESPONSE_INTEGRAL_COUNTS_PER_ACCEL = 200.0
+ODYSSEY_RESPONSE_COUNTS_PER_ACCEL = 200.0
 ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL = 500.0
 ODYSSEY_RESPONSE_SLEW_COUNTS = 10.0
 ODYSSEY_LOW_SPEED_GAS_TRIM_COUNTS = 200.0
@@ -209,7 +207,7 @@ class OdysseyGasResponse:
       # Delayed feedback must agree with the latest acceleration error.
       residual = float(np.clip(residual, min(request - aego, 0.0), max(request - aego, 0.0)))
       proportional = response_gain * residual
-      integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_INTEGRAL_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
+      integral = float(np.clip(self.integral + ODYSSEY_RESPONSE_COUNTS_PER_ACCEL * residual * DT_CTRL * 2,
                                 lower, upper))
       target = proportional + integral
       # Retain the offset at zero error without accumulating beyond usable gas authority.
