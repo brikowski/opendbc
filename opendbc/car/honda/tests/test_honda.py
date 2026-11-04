@@ -581,7 +581,12 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertAlmostEqual(odyssey_grade_gas_accel(0.0, pitch), zero_grade)
     self.assertGreater(odyssey_grade_gas_accel(-0.10, pitch), -0.10)
     self.assertAlmostEqual(odyssey_grade_gas_accel(-0.20, pitch), -0.20 + zero_grade)
-    self.assertEqual(odyssey_grade_gas_accel(ODYSSEY_ROAD_BRAKE_ENTRY, pitch), ODYSSEY_ROAD_BRAKE_ENTRY)
+    for request in (ODYSSEY_ROAD_BRAKE_ENTRY, -0.20, 0.0):
+      self.assertAlmostEqual(odyssey_grade_gas_accel(request - 1e-6, pitch),
+                             odyssey_grade_gas_accel(request + 1e-6, pitch), delta=1e-4)
+    # The same uphill load preserves net-request sensitivity through deceleration.
+    for request in (-0.60, -0.40, -0.30, -0.20, -0.10, 0.0):
+      self.assertAlmostEqual(odyssey_grade_gas_accel(request, pitch) - odyssey_grade_gas_accel(request - 0.01, pitch), 0.01)
     self.assertEqual(odyssey_grade_gas_accel(0.3, 0.0), 0.3)
     downhill_grade = math.sin(pitch) * ACCELERATION_DUE_TO_GRAVITY * 0.6
     self.assertAlmostEqual(odyssey_grade_gas_accel(0.3, -pitch), 0.3 - downhill_grade)
@@ -2848,14 +2853,15 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
       with self.subTest(change=change):
         controller = CarController({Bus.pt: dbc}, CP)
         controller.frame = 100
-        controller.odyssey_pitch.x = 0.04
+        # Keep this delayed-feedback fixture at the calibrated gas floor.
+        controller.odyssey_pitch.x = 0.02
         controller.odyssey_brake_selected = True
         controller.odyssey_brake_start_frame = 0
         controller.odyssey_coast_response.gear = 7
-        controller.odyssey_coast_response.drag[7] = -0.8 + ACCELERATION_DUE_TO_GRAVITY * math.sin(0.04)
+        controller.odyssey_coast_response.drag[7] = -0.8 + ACCELERATION_DUE_TO_GRAVITY * math.sin(0.02)
         control = structs.CarControl()
         control.enabled = control.longActive = True
-        control.orientationNED = [0.0, 0.04, 0.0]
+        control.orientationNED = [0.0, 0.02, 0.0]
         control.actuators.accel = -0.4
         control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
         state = structs.CarState()

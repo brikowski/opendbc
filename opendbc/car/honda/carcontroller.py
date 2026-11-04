@@ -80,15 +80,8 @@ def odyssey_grade_gas_accel(accel, pitch):
     # Gravity still supplies acceleration when the requested net acceleration is zero.
     return max(CarControllerParams.BOSCH_GAS_LOOKUP_BP[0], accel + grade * ODYSSEY_GRADE_GAIN)
   zero_grade = min(grade * ODYSSEY_GRADE_GAIN * odyssey_grade_weight(pitch), ODYSSEY_UPHILL_GAS_ACCEL_MAX)
-  if zero_grade > 0.0 and ODYSSEY_ROAD_BRAKE_ENTRY < accel <= 0.0:
-    gas_split = CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
-    if accel <= gas_split:
-      x = (accel - ODYSSEY_ROAD_BRAKE_ENTRY) / (gas_split - ODYSSEY_ROAD_BRAKE_ENTRY)
-      zero_grade *= x * x * (3.0 - 2.0 * x)
-    # Preserve request sensitivity through zero, even on a steep climb.
-    return accel + zero_grade
   if accel <= 0.0:
-    return accel
+    return accel + zero_grade
   x = min(accel / ODYSSEY_GRADE_RAMP_ACCEL, 1.0)
   grade_weight = x * x * (3.0 - 2.0 * x)
   grade_accel = zero_grade + (grade * ODYSSEY_GRADE_GAIN - zero_grade) * grade_weight
