@@ -3033,7 +3033,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]
     for econ, change in product((False, True), (None, 'warmup', 'gear', 'positive_error', 'zero_error', 'excess', 'stronger', 'forecast',
-                                              'offset_at_floor', 'coast_release')):
+                                              'offset_at_floor', 'coast_release', 'invalid_accel')):
       with self.subTest(econ=econ, change=change):
         controller = CarController({Bus.pt: dbc}, CP)
         controller.odyssey_eco_mode = econ
@@ -3075,6 +3075,8 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           control.actuators.accel = -.8
         elif change == 'forecast':
           controller.odyssey_coast_response.drag[5] = -.05 + ACCELERATION_DUE_TO_GRAVITY * math.sin(.08)
+        elif change == 'invalid_accel':
+          state.aEgo = math.nan
         elif change == 'offset_at_floor':
           control.orientationNED = [0., 0., 0.]
           controller.odyssey_gas_response.correction = controller.odyssey_gas_response.integral = 50.

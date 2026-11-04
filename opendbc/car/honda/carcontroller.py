@@ -655,7 +655,8 @@ class CarController(CarControllerBase):
                             (self.odyssey_gas_response.correction > 0.0 or
                              gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0]) and
                             (CS.out.aEgo <= accel + ODYSSEY_COAST_RELEASE_ERROR or
-                             (response_ready and not release_gas and gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and
+                             (response_ready and not release_gas and math.isfinite(CS.out.aEgo) and
+                              gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and
                               -ODYSSEY_COAST_RELEASE_ERROR <= self.odyssey_gas_response.error.x < 0.0)))
             if response_gas:
               gas_selected, brake_selected = True, False
