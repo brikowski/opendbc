@@ -608,12 +608,14 @@ class CarController(CarControllerBase):
               self.odyssey_brake_response_error.update(brake_error)
             else:
               self.odyssey_brake_response_error.x = 0.0
+            # Sub-count request changes must not restart an established brake handoff.
             release_brake = odyssey_brake_release(
               now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
               CS.odyssey_car_gas, CS.odyssey_target_gear,
               coast_eligible and coast_state_valid and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and
               (not self.odyssey_brake_selected or brake_feedback_active),
-              passive_accel, settled_brake and accel >= previous_accel and
+              passive_accel, settled_brake and
+              math.floor(self.accel / .01 + .5) >= math.floor(previous_accel / .01 + .5) and
               (not self.odyssey_brake_selected or self.odyssey_brake_response_error.x > ODYSSEY_COAST_RELEASE_ERROR))
             release_brake |= (settled_brake and accel > 0.0 and
                               brake_error > ODYSSEY_COAST_RELEASE_ERROR and
