@@ -2053,6 +2053,40 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
         self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], 0.05)
 
+  def test_negative_gas_entry_does_not_interrupt_a_followed_coast(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, passive, stale in product((False, True), (None, -.15, -.11, -.05, .10), (False, True)):
+      with self.subTest(econ=econ, passive=passive, stale=stale):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_pitch.x = -.01
+        if passive is not None:
+          controller.odyssey_coast_response.gear = 6
+          controller.odyssey_coast_response.drag[6] = passive + ACCELERATION_DUE_TO_GRAVITY * math.sin(-.01)
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., -.01, 0.])
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=20., aEgo=-.05, canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=102, odyssey_target_gear=6,
+                             odyssey_user_brake=0., odyssey_computer_braking=False)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        for request in (-.100, -.090, -.070, -.100):
+          control.actuators.accel = request
+          previous_gas = controller.odyssey_gas_selected
+          for _ in range(2):
+            now = 1_000_000_000 + controller.frame * 10_000_000
+            CS.odyssey_engine_torque_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+            CS.odyssey_target_gear_ts_nanos = now - (60_000_000 if stale else 0)
+            output, sends = controller.update(control.as_reader(), CS, now)
+            parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          followed_coast = not previous_gas and not stale and passive is not None and passive >= request
+          self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'] == -30000, followed_coast)
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertAlmostEqual(output.accel, request, delta=1e-6)
+          self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], request, delta=.005)
+
   def test_prior_coast_forecast_tolerates_small_response_changes(self):
     for request, excess in product((-.1, 0., .1), (.04, 0., -.01, -.19)):
       with self.subTest(request=request, excess=excess):

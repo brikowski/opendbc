@@ -44,7 +44,8 @@ def odyssey_command_domains(accel, speed, previous_brake=False, previous_gas=Fal
   gas_selected = accel > 0.0
   if speed >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO:
     gas_selected |= (not previous_brake and not previous_gas and ODYSSEY_GAS_BRIDGE_ENTRY <= accel < 0.0 and
-                     gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0])
+                     gas_accel > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0] and
+                     (passive_accel is None or accel > passive_accel))
     gas_selected |= previous_gas and min(accel, gas_accel) > CarControllerParams.BOSCH_GAS_LOOKUP_BP[0]
     if bridge_active and accel < ODYSSEY_GAS_BRIDGE_ENTRY:
       gas_selected = False
