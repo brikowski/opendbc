@@ -311,12 +311,12 @@ class OdysseyGasCoastRelease:
     downhill_gravity = -ACCELERATION_DUE_TO_GRAVITY * math.sin(pitch)
     # A prior forecast must not undo exhausted-gas coast while measured excess remains.
     if (request <= ODYSSEY_ROAD_BRAKE_ENTRY or
-        (passive_accel is not None and passive_accel - request < 0.05 and
+        (passive_accel is not None and passive_accel < request and
          not self.exhausted) or
         not ODYSSEY_LOW_SPEED_DOMAIN_VEGO <= speed <= 35.0 or
         (downhill_gravity <= ODYSSEY_COAST_RELEASE_GRAVITY and not self.exhausted) or
         (aego - request < 0.05 and not
-         (passive_accel is not None and passive_accel - request >= 0.05 and
+         (passive_accel is not None and passive_accel >= request and
           aego >= request - ODYSSEY_COAST_RELEASE_ERROR))):
       self.active = self.exhausted = False
     if (not self.active and (previous_gas or passive_accel is not None) and ODYSSEY_LOW_SPEED_DOMAIN_VEGO <= speed <= 35.0 and

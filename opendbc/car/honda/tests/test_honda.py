@@ -2140,6 +2140,46 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           else:
             self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
 
+  def test_followed_coast_does_not_pulse_gas_near_the_request(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, exhausted, escape in product((False, True), (False, True), ('demand', 'shortfall', 'mode')):
+      with self.subTest(econ=econ, exhausted=exhausted, escape=escape):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_pitch.x = -.04
+        controller.odyssey_coast_response.gear = 6
+        controller.odyssey_coast_response.drag[6] = .23 + ACCELERATION_DUE_TO_GRAVITY * math.sin(-.04)
+        controller.odyssey_gas_coast_release.gear = 6
+        controller.odyssey_gas_coast_release.active = True
+        controller.odyssey_gas_coast_release.exhausted = exhausted
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., -.04, 0.])
+        control.actuators.accel = .2
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=20., aEgo=.24, canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=102, odyssey_target_gear=6,
+                             odyssey_user_brake=0., odyssey_computer_braking=False)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        for phase in (0, 1):
+          if phase:
+            if escape == 'demand':
+              control.actuators.accel, state.aEgo = .3, .31
+            elif escape == 'shortfall':
+              state.aEgo = -.01
+            else:
+              state.ecoMode = not econ
+          for _ in range(2):
+            now = 1_000_000_000 + controller.frame * 10_000_000
+            CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+            output, sends = controller.update(control.as_reader(), CS, now)
+            parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+          self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'] == -30000, not phase)
+          self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
+          self.assertAlmostEqual(output.accel, control.actuators.accel, delta=1e-6)
+          self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], control.actuators.accel, delta=.005)
+
   def test_downhill_gas_floor_releases_without_coast_history_only_on_falling_request(self):
     def run(gas_floor, pitch=-0.04, aego=0.4, request=-0.12):
       response = OdysseyGasCoastRelease()
@@ -2370,7 +2410,7 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         )):
           self.assertTrue(release.update(now, request, request + .3, 20., 0., 7, forecast, True, True, True, True, False))
           self.assertEqual(release.update(now + 20_000_000, next_request, achieved, speed, 0., gear, forecast, False, eligible,
-                                         downhill=False), index == 0 and forecast_offset == .5)
+                                         downhill=False), index == 0 and forecast_offset is not None and forecast_offset >= 0.)
           now += 40_000_000
 
   def test_downhill_coast_waits_for_the_issued_zero_gas_command(self):
