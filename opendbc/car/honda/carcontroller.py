@@ -236,7 +236,7 @@ def odyssey_brake_release(now_nanos, request, aego, previous_brake, braking_ts_n
     return False
   # Require excess braking to release; tolerate the existing response margin for a qualified handoff.
   margin = -ODYSSEY_COAST_RELEASE_ERROR if previous_brake else ODYSSEY_COAST_RELEASE_ERROR
-  forecast_margin = ODYSSEY_COAST_RELEASE_ERROR if coast_from_brake and aego <= request else 0.0
+  forecast_margin = ODYSSEY_COAST_RELEASE_ERROR if coast_from_brake else 0.0
   return request < 0.0 and passive_accel <= request + forecast_margin and aego < request + margin
 
 
