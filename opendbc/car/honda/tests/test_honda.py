@@ -3005,6 +3005,55 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
           assert first_excess_brake is not None
           self.assertLessEqual(first_excess_brake, 160 + 2 * ODYSSEY_RESPONSE_DELAY_FRAMES + 2)
 
+  def test_settled_zero_gas_yields_to_a_closer_coast_response(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, passive, reported_gas in product((False, True), (-.38, -.8), (0., 1.)):
+      with self.subTest(econ=econ, passive=passive, reported_gas=reported_gas):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 100
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_gas_selected = True
+        controller.odyssey_pitch.x = .02
+        controller.odyssey_coast_response.gear = 7
+        controller.odyssey_coast_response.drag[7] = passive + ACCELERATION_DUE_TO_GRAVITY * math.sin(.02)
+        # Gas feedback is mature, but its issued command has only just reached zero.
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
+          controller.odyssey_gas_response.update(-.32, -.18, .02, 24., 7, True, shift_activity=119)
+        CS = CarState(CP)
+        CS.update(CS.get_can_parsers(CP))
+        CS.out = structs.CarState(vEgo=24., aEgo=-.18, canValid=True, ecoModeValid=True, ecoMode=econ)
+        CS.odyssey_target_gear, CS.odyssey_shift_activity = 7, 119
+        CS.odyssey_car_gas = reported_gas
+        CS.odyssey_user_brake, CS.odyssey_computer_braking = 0., False
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., .02, 0.])
+        control.actuators.accel = -.32
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        first_coast = None
+        expected = passive == -.38 and reported_gas == 0.
+        for frame in range(100, 161):
+          now = 2_000_000_000 + frame * 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now - 5_000_000
+          output, sends = controller.update(control.as_reader(), CS, now)
+          messages = [(addr, dat, bus) for addr, dat, bus in sends if addr == 0x1DF and bus == 1]
+          if not messages:
+            continue
+          parser.update([(now, messages)])
+          gas, brake = (parser.vl['ACC_CONTROL'][key] for key in ('GAS_COMMAND', 'BRAKE_REQUEST'))
+          self.assertEqual(brake, 0)
+          self.assertAlmostEqual(parser.vl['ACC_CONTROL']['ACCEL_COMMAND'], -.32, delta=.01)
+          self.assertAlmostEqual(output.accel, -.32, delta=.01)
+          if gas == -30000:
+            if first_coast is None:
+              first_coast = frame
+            self.assertTrue(expected)
+          else:
+            self.assertGreaterEqual(gas, 0)
+          if frame < 100 + 2 * (ODYSSEY_RESPONSE_DELAY_FRAMES + 1):
+            self.assertIsNone(first_coast)
+        self.assertEqual(first_coast, 100 + 2 * (ODYSSEY_RESPONSE_DELAY_FRAMES + 1) if expected else None)
+
   def test_gas_continuity_does_not_cycle_on_transient_response(self):
     CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
     dbc = DBC[CP.carFingerprint][Bus.pt]

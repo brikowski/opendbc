@@ -144,6 +144,10 @@ class OdysseyGasResponse:
     self.paused = False
     self.error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2, initialized=False)
 
+  @property
+  def floor_ready(self):
+    return len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES and all(floor for _, _, floor in self.requests)
+
   def reset(self):
     self.__init__()
 
@@ -155,7 +159,7 @@ class OdysseyGasResponse:
     self.error = FirstOrderFilter(0.0, ODYSSEY_RESPONSE_ERROR_TAU, DT_CTRL * 2, initialized=False)
 
   def update(self, request, aego, pitch, speed, gear, eligible, cap_weight=0.0, shift_activity=0,
-             limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS), coast=False):
+             limits=(-ODYSSEY_RESPONSE_MAX_COUNTS, ODYSSEY_RESPONSE_MAX_COUNTS), coast=False, gas_floor=False):
     if (not (eligible or coast) or not all(math.isfinite(v) for v in (request, aego, pitch, speed, gear, cap_weight, *limits)) or
         not 1 <= gear <= 10):
       self.reset()
@@ -188,13 +192,13 @@ class OdysseyGasResponse:
       self.pitch_peak = pitch
     self.drivetrain = drivetrain
     self.pitch_peak = pitch if self.pitch_peak is None else max(self.pitch_peak, pitch)
-    self.requests.append((request, cap_weight))
+    self.requests.append((request, cap_weight, gas_floor))
     # Fresh feedback and warmup use the mapped headroom.
     lower = limits[0]
     upper = limits[1]
     target = 0.0
     if len(self.requests) > ODYSSEY_RESPONSE_DELAY_FRAMES:
-      delayed_request, delayed_cap_weight = self.requests[0]
+      delayed_request, delayed_cap_weight, _ = self.requests[0]
       response_gain = ODYSSEY_RESPONSE_COUNTS_PER_ACCEL + (ODYSSEY_RESPONSE_CAPPED_COUNTS_PER_ACCEL -
                                                           ODYSSEY_RESPONSE_COUNTS_PER_ACCEL) * float(np.clip(delayed_cap_weight, 0.0, 1.0))
       residual = self.error.update(delayed_request - aego)
@@ -652,7 +656,14 @@ class CarController(CarControllerBase):
                              (response_ready and not release_gas and math.isfinite(CS.out.aEgo) and
                               gas_accel > self.params.BOSCH_GAS_LOOKUP_BP[0] and
                               -ODYSSEY_COAST_RELEASE_ERROR <= self.odyssey_gas_response.error.x < 0.0)))
-            if response_gas:
+            # At settled zero gas, a closer passive response can replace unavailable gas reduction.
+            if response_gas and not (
+                coast_eligible and response_ready and self.odyssey_gas_response.floor_ready and
+                accel <= self.params.BOSCH_GAS_LOOKUP_BP[0] and
+                math.floor(previous_gas_command + 0.5) == 0 and CS.odyssey_car_gas == 0.0 and
+                not brake_feedback_active and passive_accel is not None and CS.out.aEgo > accel and
+                self.odyssey_gas_response.error.x < 0.0 and
+                abs(passive_accel - accel) < min(CS.out.aEgo - accel, -self.odyssey_gas_response.error.x)):
               gas_selected, brake_selected = True, False
               self.odyssey_gas_bridge_active = False
             # A prior coast forecast and fresh response can establish brake need before the learning dwell.
@@ -691,6 +702,8 @@ class CarController(CarControllerBase):
                                                             CS.out.vEgo, CS.odyssey_target_gear, feedback_eligible,
                                                             cap_weight, CS.odyssey_shift_activity,
                                                             limits=(-self.gas, self.params.BOSCH_GAS_LOOKUP_V[-1] - self.gas),
+                                                            gas_floor=(previous_gas and math.floor(previous_gas_command + 0.5) == 0 and
+                                                                       CS.odyssey_car_gas == 0.0),
                                                             coast=feedback_state_valid and not gas_selected and not brake_selected)
             if feedback_eligible:
               self.gas = float(np.clip(self.gas + correction, 0.0, self.params.BOSCH_GAS_LOOKUP_V[-1]))
