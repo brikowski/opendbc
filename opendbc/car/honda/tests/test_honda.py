@@ -990,6 +990,24 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertEqual(response.update(.2, .2, 0., 20., 6, False), 0.)
     self.assertEqual(response.integral, 0.)
 
+  def test_gas_response_withdraws_added_gas_at_the_floor_before_delayed_error(self):
+    for mapped_gas, achieved, withdraw in ((0., -.1, True), (0., -.5, False), (30., -.1, False)):
+      with self.subTest(mapped_gas=mapped_gas, achieved=achieved):
+        response = OdysseyGasResponse()
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
+          response.update(.1, 0., .04, 20., 7, True, limits=(-100., 100.))
+        learned = response.integral
+        self.assertGreater(learned, 0.)
+        for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES // 2):
+          previous = response.correction
+          response.update(-.6, achieved, .04, 20., 7, True, limits=(-mapped_gas, 100.))
+          self.assertLessEqual(abs(response.correction - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+        self.assertEqual(response.integral, learned)
+        if withdraw:
+          self.assertEqual(response.correction, 0.)
+        else:
+          self.assertGreater(response.correction, 0.)
+
   def test_gas_response_saturation_unwinds_without_storing_excess(self):
     for direction in (-1, 1):
       with self.subTest(direction=direction):
