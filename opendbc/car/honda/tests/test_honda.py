@@ -4104,3 +4104,52 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     self.assertEqual(odyssey_gas_command(-0.05, 136.0, True, False, False, 0.5), (38.0, True))
     self.assertEqual(odyssey_gas_command(-0.05, 136.0, True, False, False, 1.0), (136.0, True))
     self.assertEqual(odyssey_gas_command(0.0, 182.0, True, True, True, 1.0), (182.0, False))
+
+  def test_gas_response_does_not_reramp_added_gas_while_excess_persists(self):
+    response = OdysseyGasResponse()
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES * 2):
+      response.update(.1, 0., .04, 20., 7, True, limits=(-100., 100.))
+    self.assertGreater(response.integral, 0.)
+    self.assertGreater(response.correction, 0.)
+    for _ in range(ODYSSEY_RESPONSE_DELAY_FRAMES // 2):
+      response.update(-.6, -.35, .04, 20., 7, True, limits=(0., 100.))
+    self.assertEqual(response.correction, 0.)
+    self.assertGreater(response.integral, 0.)
+    for _ in range(10):
+      self.assertEqual(response.update(-.6, -.42, .04, 20., 7, True, limits=(0., 100.)), 0.)
+    previous = response.correction
+    resumed = response.update(-.6, -.70, .04, 20., 7, True, limits=(0., 100.))
+    self.assertGreater(resumed, 0.)
+    self.assertLessEqual(abs(resumed - previous), ODYSSEY_RESPONSE_SLEW_COUNTS)
+
+  def test_brake_settling_resets_on_gear_change_while_waiting_for_brake_release(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    controller = CarController({Bus.pt: dbc}, CP)
+    controller.frame = 100
+    controller.odyssey_brake_selected = True
+    controller.odyssey_brake_start_frame = 0
+    controller.odyssey_coast_response.gear = 7
+    controller.odyssey_coast_response.drag[6] = -.34
+    control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+    control.actuators.accel = .2
+    control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+    state = structs.CarState(vEgo=15., aEgo=-.65, canValid=True)
+    now = 2_000_000_000
+    CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                         odyssey_car_gas=0., odyssey_shift_activity=102, odyssey_target_gear=6,
+                         odyssey_user_brake=.25, odyssey_computer_braking=True,
+                         odyssey_engine_torque_ts_nanos=now, odyssey_target_gear_ts_nanos=now,
+                         odyssey_computer_braking_ts_nanos=now)
+    controller.update(control.as_reader(), CS, now)
+    self.assertIsNone(controller.odyssey_brake_start_frame)
+
+    controller.frame = 102
+    now += 20_000_000
+    control.actuators.accel = -.35
+    CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+    _, sends = controller.update(control.as_reader(), CS, now)
+    parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+    parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
+    self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 1)
+    self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
