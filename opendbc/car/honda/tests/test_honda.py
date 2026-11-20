@@ -145,12 +145,17 @@ class TestOdysseySteering(unittest.TestCase):
       self.assertEqual(params.STEER_MAX, 3840)
       self.assertEqual(params.STEER_DELTA_UP * params.STEER_MAX, 7680)
       self.assertEqual(params.STEER_DELTA_DOWN * params.STEER_MAX, 7680)
-      self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.35, places=6)
-      self.assertAlmostEqual(CP.lateralTuning.torque.friction, .2 / 1.5, places=6)
+      self.assertAlmostEqual(CP.lateralTuning.torque.latAccelFactor, 1.05, places=6)
+      self.assertAlmostEqual(CP.lateralTuning.torque.friction, .12, places=6)
+      self.assertAlmostEqual(CP.maxLateralAccel, .9, places=6)
       self.assertAlmostEqual(CP.steerActuatorDelay, .15, places=6)
       torque_from_accel = CarInterface(CP).torque_from_lateral_accel()
-      for demand, error, expected in ((.45, 0., 1280), (.45, .4, 1792), (.45, -.4, 768),
-                                      (-.45, 0., -1280), (-.45, .4, -768), (-.45, -.4, -1792)):
+      for demand, error, expected in ((.45, 0., .45 / 1.05 * 3840),
+                                      (.45, .4, (.45 / 1.05 + .12) * 3840),
+                                      (.45, -.4, (.45 / 1.05 - .12) * 3840),
+                                      (-.45, 0., -.45 / 1.05 * 3840),
+                                      (-.45, .4, (-.45 / 1.05 + .12) * 3840),
+                                      (-.45, -.4, (-.45 / 1.05 - .12) * 3840)):
         with self.subTest(alpha_long=alpha_long, demand=demand, error=error):
           acceleration = demand + get_friction(error, .01, FRICTION_THRESHOLD, CP.lateralTuning.torque)
           self.assertAlmostEqual(torque_from_accel(acceleration, CP.lateralTuning.torque) * params.STEER_MAX,
