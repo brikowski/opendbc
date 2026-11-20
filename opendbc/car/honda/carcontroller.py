@@ -252,7 +252,7 @@ class OdysseyCoastResponse:
   """Return a prior passive estimate, or None if unlearned or currently ineligible."""
   def __init__(self):
     self.drag = {}
-    self.samples = deque(maxlen=5)
+    self.samples = deque(maxlen=9)
     self.gear = None
     self.coast_start = None
 
@@ -282,11 +282,14 @@ class OdysseyCoastResponse:
         self.coast_start = frame
         # Median observations belong to one uninterrupted coast.
         self.samples.clear()
-      # Acquire the first five settled samples promptly; retain the learned update cadence.
+      # Acquire the first five settled samples promptly; require nine 100 ms samples to update.
       if frame - self.coast_start >= 50 and (gear not in self.drag or frame % 10 == 0):
         self.samples.append(aego - gravity)
-        if len(self.samples) == self.samples.maxlen:
+        if gear not in self.drag and len(self.samples) == 5:
           self.drag[gear] = sorted(self.samples)[2]
+          self.samples.clear()
+        elif gear in self.drag and len(self.samples) == self.samples.maxlen:
+          self.drag[gear] = sorted(self.samples)[4]
     return forecast
 
 
@@ -475,7 +478,7 @@ class CarController(CarControllerBase):
 
   def _select_odyssey_domains(self, accel, CS, previous_gas, previous_gas_command, gas_accel, passive_accel,
                               coast_eligible, settled_brake, settled_coast, brake_feedback_active,
-                              response_ready, response_excess, release_brake, release_gas):
+                              brake_overdecel_filtered, response_ready, response_excess, release_brake, release_gas):
     passive_response_eligible = ODYSSEY_LOW_SPEED_DOMAIN_VEGO <= CS.out.vEgo <= 35.0 and passive_accel is not None
     coast_start = self.odyssey_coast_response.coast_start
     response_gas = (passive_response_eligible and accel < 0.0 and passive_accel < accel and
@@ -484,7 +487,7 @@ class CarController(CarControllerBase):
                                         (not response_excess and not self.odyssey_gas_bridge_active))) or
                      (passive_accel < accel - ODYSSEY_COAST_RELEASE_ERROR and
                       CS.odyssey_car_gas == 0.0 and CS.out.aEgo < accel - ODYSSEY_COAST_RELEASE_ERROR and
-                      (settled_coast or settled_brake))))
+                      (settled_coast or (settled_brake and brake_overdecel_filtered)))))
     # Mature negative feedback can handle transient excess without discarding calibrated gas.
     response_gas |= (previous_gas and not self.odyssey_gas_bridge_active and
                      coast_eligible and not brake_feedback_active and
@@ -573,16 +576,18 @@ class CarController(CarControllerBase):
     brake_error = accel - CS.out.aEgo
     if (self.odyssey_brake_selected and coast_eligible and
         passive_accel is not None and ODYSSEY_LOW_SPEED_DOMAIN_VEGO <= CS.out.vEgo <= 35.0 and
-        CS.odyssey_car_gas == 0.0 and math.isfinite(CS.odyssey_user_brake) and math.isfinite(brake_error)):
+        CS.odyssey_car_gas == 0.0 and (CS.odyssey_computer_braking or math.isfinite(CS.odyssey_user_brake)) and
+        math.isfinite(brake_error)):
       self.odyssey_brake_response_error.update(brake_error)
     else:
       self.odyssey_brake_response_error.x = 0.0
+    brake_overdecel_filtered = not self.odyssey_brake_selected or self.odyssey_brake_response_error.x > 0.0
     # Once released, coast tolerance follows the current request and measured response.
     release_brake = odyssey_brake_release(
       now_nanos, accel, CS.out.aEgo, self.odyssey_brake_selected, CS.odyssey_computer_braking_ts_nanos,
       CS.odyssey_car_gas, CS.odyssey_target_gear,
       coast_eligible and CS.out.vEgo >= ODYSSEY_LOW_SPEED_DOMAIN_VEGO and
-      (not self.odyssey_brake_selected or brake_feedback_active),
+      (not self.odyssey_brake_selected or (brake_feedback_active and brake_overdecel_filtered)),
       passive_accel, settled_brake and
       (not self.odyssey_brake_selected or
        (math.floor(self.accel / .01 + .5) >= math.floor(previous_accel / .01 + .5) and
@@ -605,7 +610,7 @@ class CarController(CarControllerBase):
     gas_selected, brake_selected, response_gas, waiting_for_brake_release = self._select_odyssey_domains(
       accel, CS, previous_gas, previous_gas_command, gas_accel, passive_accel,
       coast_eligible, settled_brake, settled_coast, brake_feedback_active,
-      response_ready, response_excess, release_brake, release_gas)
+      brake_overdecel_filtered, response_ready, response_excess, release_brake, release_gas)
     # Keep settled brake history through qualified coast and the feedback wait, unless the gear changes.
     if brake_selected and not self.odyssey_brake_selected:
       self.odyssey_brake_start_frame = self.frame

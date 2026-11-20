@@ -1707,41 +1707,43 @@ class TestOdysseyLongitudinal(unittest.TestCase):
     self.assertFalse(response.drag)
     for frame, accel in zip(range(50, 60, 2), [0.25, 0.24, 3.0, 0.26, 0.27], strict=True):
       self.assertIsNone(response.update(frame, 7, 0.0, accel, True, True))
-    self.assertAlmostEqual(response.update(60, 7, 0.0, 0.28, True, True), 0.26)
-    for frame in range(62, 80, 2):
-      self.assertAlmostEqual(response.update(frame, 7, 0.0, 0.26 if frame == 70 else 9.0, True, True), 0.27)
-    self.assertAlmostEqual(response.update(80, 7, 0.0, 0.25, True, True), 0.27)
-    self.assertAlmostEqual(response.update(82, 7, 0.0, -3.0, False, True), 0.26)
+    self.assertAlmostEqual(response.drag[7], 0.26)
+    self.assertFalse(response.samples)
+    updates = {60: 0.28, 70: 0.26, 80: 0.25, 90: 0.29, 100: 0.27, 110: 0.28, 120: 0.26, 130: 0.27}
+    for frame in range(60, 140, 2):
+      self.assertAlmostEqual(response.update(frame, 7, 0.0, updates.get(frame, 9.0), True, True), 0.26)
+    self.assertAlmostEqual(response.update(140, 7, 0.0, 0.28, True, True), 0.26)
+    self.assertAlmostEqual(response.update(142, 7, 0.0, -3.0, False, True), 0.27)
     drag = response.drag.copy()
-    self.assertAlmostEqual(response.update(90, 7, 0.0, -3.0, False, True), 0.26)
+    self.assertAlmostEqual(response.update(150, 7, 0.0, -3.0, False, True), 0.27)
     self.assertEqual(response.drag, drag)
-    for frame in range(92, 140, 2):
+    for frame in range(152, 200, 2):
       self.assertIsNone(response.update(frame, 8, 0.0, 0.0, True, True))
     # A known gear keeps its prior forecast while new coast observations settle.
-    for frame in range(140, 190, 2):
-      self.assertAlmostEqual(response.update(frame, 7, 0.0, 9.0, True, True), 0.26)
-    self.assertAlmostEqual(response.update(190, 7, 0.0, 9.0, True, True), 0.26)
+    for frame in range(200, 250, 2):
+      self.assertAlmostEqual(response.update(frame, 7, 0.0, 9.0, True, True), 0.27)
+    self.assertAlmostEqual(response.update(250, 7, 0.0, 9.0, True, True), 0.27)
     self.assertTrue(response.samples)
-    self.assertIsNone(response.update(192, 7, 0.0, 0.0, False, False))
+    self.assertIsNone(response.update(252, 7, 0.0, 0.0, False, False))
     self.assertEqual(response.drag, drag)
     self.assertFalse(response.samples)
     self.assertIsNone(response.coast_start)
     self.assertIsNone(response.gear)
-    self.assertAlmostEqual(response.update(194, 7, 0.0, -3.0, False, True), 0.26)
-    self.assertIsNone(response.update(196, 8, 0.0, -3.0, False, True))
+    self.assertAlmostEqual(response.update(254, 7, 0.0, -3.0, False, True), 0.27)
+    self.assertIsNone(response.update(256, 8, 0.0, -3.0, False, True))
     for gear in (0, 13):
-      self.assertIsNone(response.update(198, gear, 0.0, -3.0, True, True))
+      self.assertIsNone(response.update(258, gear, 0.0, -3.0, True, True))
       self.assertEqual(response.drag, drag)
       self.assertFalse(response.samples)
       self.assertIsNone(response.coast_start)
       self.assertIsNone(response.gear)
-      self.assertAlmostEqual(response.update(200, 7, 0.0, -3.0, False, True), 0.26)
+      self.assertAlmostEqual(response.update(260, 7, 0.0, -3.0, False, True), 0.27)
     for index in range(3):
       for invalid in (math.nan, math.inf):
         values = [7, 0.0, 0.0]
         values[index] = invalid
         response.drag = drag.copy()
-        self.assertIsNone(response.update(202, *values, True, True))
+        self.assertIsNone(response.update(262, *values, True, True))
         self.assertFalse(response.drag)
     response.reset()
     self.assertFalse(response.drag)
@@ -1961,12 +1963,11 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     response = OdysseyCoastResponse()
     for frame in range(0, 100, 2):
       response.update(frame, 7, 0.0, -0.15, True, True)
-    self.assertAlmostEqual(response.update(100, 7, 0.0, 0.30, True, True), -0.15)
-    for frame in range(102, 140, 2):
+    for frame in range(100, 182, 2):
       response.update(frame, 7, 0.0, 0.30, True, True)
-    self.assertAlmostEqual(response.update(140, 7, 0.0, 3.0, True, True), 0.30)
-    self.assertAlmostEqual(response.update(142, 7, 0.0, 0.30, True, True), 0.30)
-    for frame in range(144, 210, 2):
+    self.assertAlmostEqual(response.update(182, 7, 0.0, 3.0, True, True), 0.30)
+    self.assertAlmostEqual(response.update(190, 7, 0.0, 3.0, True, True), 0.30)
+    for frame in range(192, 260, 2):
       self.assertAlmostEqual(response.update(frame, 7, 0.0, -3.0, False, True), 0.30)
 
   def test_incomplete_coast_samples_cannot_bridge_interrupted_observations(self):
@@ -1988,9 +1989,9 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     for frame in range(0, 100, 2):
       response.update(frame, 7, 0., -.4, True, True)
     self.assertAlmostEqual(response.update(100, 7, 0., 3., False, True), -.4)
-    for frame in range(200, 292, 2):
+    for frame in range(200, 332, 2):
       self.assertEqual(response.update(frame, 7, 0., .1, True, True), -.4)
-    self.assertAlmostEqual(response.update(292, 7, 0., .1, True, True), .1)
+    self.assertAlmostEqual(response.update(332, 7, 0., .1, True, True), .1)
 
   def test_downhill_gas_release_requires_response_and_preserves_brake_authority(self):
     response = OdysseyGasCoastRelease()
@@ -2914,18 +2915,33 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
         continue
       parser.update([(now, messages)])
       values = parser.vl['ACC_CONTROL']
-      if frame < 2 * ODYSSEY_RESPONSE_DELAY_FRAMES:
-        self.assertEqual(values['GAS_COMMAND'], -30000)
-        self.assertEqual(values['BRAKE_REQUEST'], 1)
-      else:
-        self.assertGreaterEqual(values['GAS_COMMAND'], 0)
-        self.assertEqual(values['BRAKE_REQUEST'], 0)
+      # Ignore transients before settling and a single-frame dip after under-deceleration.
+      self.assertEqual(values['GAS_COMMAND'], -30000)
+      self.assertEqual(values['BRAKE_REQUEST'], 1)
 
-    for frame in range(51, 57):
+    entered_frame = None
+    for frame in range(2 * ODYSSEY_RESPONSE_DELAY_FRAMES + 1, 2 * ODYSSEY_RESPONSE_DELAY_FRAMES + 60):
       now = 2_000_000_000 + frame * 10_000_000
       CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
-      state.aEgo = -0.8 if frame >= 54 else -0.1
-      control.actuators.accel = 0.1 if frame in (51, 56) else -0.4
+      state.aEgo = -0.8
+      _, sends = controller.update(control.as_reader(), CS, now)
+      messages = [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1]
+      if not messages:
+        continue
+      parser.update([(now, messages)])
+      values = parser.vl['ACC_CONTROL']
+      if not values['BRAKE_REQUEST']:
+        self.assertGreaterEqual(values['GAS_COMMAND'], 0)
+        entered_frame = frame
+        break
+    self.assertIsNotNone(entered_frame)
+
+    for offset in range(1, 7):
+      frame = entered_frame + offset
+      now = 2_000_000_000 + frame * 10_000_000
+      CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+      state.aEgo = -0.8 if offset >= 4 else -0.1
+      control.actuators.accel = 0.1 if offset in (1, 6) else -0.4
       _, sends = controller.update(control.as_reader(), CS, now)
       messages = [(addr, dat, src) for addr, dat, src in sends if addr == 0x1DF and src == 1]
       if not messages:
@@ -4153,3 +4169,83 @@ assert response.update(60, 7, 0.0, -0.2, True, True) == -0.2
     parser.update([(now, [msg for msg in sends if msg[0] == 0x1DF])])
     self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 1)
     self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
+
+  def test_coast_drag_rejects_short_rough_road_burst_on_established_estimate(self):
+    response = OdysseyCoastResponse()
+    for frame in range(0, 60, 2):
+      response.update(frame, 6, 0.0, -0.15, True, True)
+    self.assertAlmostEqual(response.drag[6], -0.15)
+    # Four 100 ms burst samples leave an established estimate unchanged across a nine-sample median.
+    for frame in range(60, 92, 2):
+      response.update(frame, 6, 0.0, -0.50, True, True)
+    self.assertAlmostEqual(response.drag[6], -0.15)
+    for frame in range(92, 142, 2):
+      response.update(frame, 6, 0.0, -0.15, True, True)
+    self.assertAlmostEqual(response.drag[6], -0.15)
+
+    # A sustained shift across five of nine 100 ms samples updates the established median cleanly.
+    response = OdysseyCoastResponse()
+    for frame in range(0, 60, 2):
+      response.update(frame, 6, 0.0, -0.15, True, True)
+    for frame in range(60, 142, 2):
+      response.update(frame, 6, 0.0, -0.25 if frame < 102 else -0.15, True, True)
+    self.assertAlmostEqual(response.drag[6], -0.25)
+
+  def test_brake_exit_rejects_single_frame_overdecel_spike_while_filtered_error_is_underdecelerating(self):
+    CP = CarInterface.get_params(CAR.HONDA_ODYSSEY_5G_MMR, gen_empty_fingerprint(), [], True, False, False)
+    dbc = DBC[CP.carFingerprint][Bus.pt]
+    for econ, computer_braking in product((False, True), (True, False)):
+      with self.subTest(econ=econ, computer_braking=computer_braking):
+        controller = CarController({Bus.pt: dbc}, CP)
+        controller.frame = 0
+        controller.odyssey_eco_mode = econ
+        controller.odyssey_brake_selected = True
+        controller.odyssey_brake_start_frame = 0
+        controller.odyssey_coast_response.gear = 6
+        controller.odyssey_coast_response.drag[6] = -0.60 if not computer_braking else -0.35
+        control = structs.CarControl(enabled=True, longActive=True, orientationNED=[0., 0., 0.])
+        control.actuators.accel = -0.28
+        control.actuators.longControlState = structs.CarControl.Actuators.LongControlState.pid
+        state = structs.CarState(vEgo=15., aEgo=-0.10, canValid=True, ecoMode=econ, ecoModeValid=True)
+        CS = SimpleNamespace(out=state, v_cruise_factor=.44704, is_metric=False, acc_hud={}, lkas_hud={}, stock_brake={},
+                             odyssey_car_gas=0., odyssey_shift_activity=102, odyssey_target_gear=6,
+                             odyssey_user_brake=0.2 if computer_braking else 0.0,
+                             odyssey_computer_braking=computer_braking)
+        parser = CANParser(dbc, [('ACC_CONTROL', 0)], 1)
+        # Settle braking with sustained under-deceleration (filtered brake error < 0).
+        now = 1_000_000_000
+        for _ in range(120):
+          now += 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          messages = [msg for msg in sends if msg[0] == 0x1DF]
+          if messages:
+            parser.update([(now, messages)])
+            self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 1)
+        self.assertLess(controller.odyssey_brake_response_error.x, 0.0)
+
+        # A single 50 Hz wheel-speed dip below the response threshold must not exit braking.
+        state.aEgo = -0.58
+        for _ in range(2):
+          now += 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          messages = [msg for msg in sends if msg[0] == 0x1DF]
+          if messages:
+            parser.update([(now, messages)])
+        self.assertLess(controller.odyssey_brake_response_error.x, 0.0)
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 1)
+        self.assertEqual(parser.vl['ACC_CONTROL']['GAS_COMMAND'], -30000)
+
+        # Sustained over-deceleration brings the filtered error above zero and exits cleanly.
+        for _ in range(60):
+          now += 10_000_000
+          CS.odyssey_engine_torque_ts_nanos = CS.odyssey_target_gear_ts_nanos = CS.odyssey_computer_braking_ts_nanos = now
+          _, sends = controller.update(control.as_reader(), CS, now)
+          messages = [msg for msg in sends if msg[0] == 0x1DF]
+          if messages:
+            parser.update([(now, messages)])
+            if not parser.vl['ACC_CONTROL']['BRAKE_REQUEST']:
+              break
+        self.assertGreater(controller.odyssey_brake_response_error.x, 0.0)
+        self.assertEqual(parser.vl['ACC_CONTROL']['BRAKE_REQUEST'], 0)
