@@ -366,7 +366,6 @@ typedef struct {
 
   bool honda_alt_brake_msg;
   bool honda_bosch_long;
-  bool honda_bosch_odyssey_long;
   bool honda_bosch_radarless;
   bool honda_bosch_canfd;
   HondaHw honda_hw;
